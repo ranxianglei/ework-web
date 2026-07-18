@@ -1,13 +1,19 @@
 #!/usr/bin/env bun
 // Test receiver for ework webhooks. Listens on a port, prints each delivery,
-// and writes every received payload to a JSONL log file. Used by
-// scripts/webhook-test.sh to verify the full pipeline end-to-end.
+// writes every received payload to a JSONL log file, and (when EWORK_TOKEN is
+// set) autonomously replies to issue_comment/created events by posting a
+// marked echo comment back to the issue — closing the loop end-to-end.
 //
 // Usage:
 //   bun run scripts/webhook-receiver.ts [port] [secret]
-//   PORT=8099 SECRET=topsecret bun run scripts/webhook-receiver.ts
+//   PORT=8099 SECRET=topsecret EWORK_TOKEN=xxx bun run scripts/webhook-receiver.ts
 //
-// Log file: ./webhook-received.jsonl (one JSON object per line per delivery).
+// Env:
+//   PORT          listen port (default 8099)
+//   SECRET        HMAC secret; if unset, signature verification is skipped
+//   LOG_FILE      JSONL log path (default ./webhook-received.jsonl)
+//   EWORK_URL     ework base URL for reply mode (default http://127.0.0.1:1196)
+//   EWORK_TOKEN   ework token; enables autonomous reply mode when set
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { mkdirSync, appendFileSync } from "node:fs";
@@ -16,8 +22,51 @@ import { resolve } from "node:path";
 const PORT = Number(process.env.PORT ?? process.argv[2] ?? "8099");
 const SECRET = process.env.SECRET ?? process.argv[3] ?? "";
 const LOG_FILE = resolve(process.env.LOG_FILE ?? "./webhook-received.jsonl");
+const EWORK_URL = (process.env.EWORK_URL ?? "http://127.0.0.1:1196").replace(/\/$/, "");
+const EWORK_TOKEN = process.env.EWORK_TOKEN ?? "";
+const REPLY_MODE = !!EWORK_TOKEN;
+const REPLY_MARKER = "🤖 echo:";
 
 mkdirSync(resolve(LOG_FILE, ".."), { recursive: true });
+
+let replyCookie: string | null = null;
+
+async function loginReply(): Promise<string> {
+  const r = await fetch(`${EWORK_URL}/login`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ token: EWORK_TOKEN }).toString(),
+    redirect: "manual",
+  });
+  const setCookie = r.headers.get("set-cookie");
+  if (!setCookie) throw new Error(`reply-login: no set-cookie, status=${r.status}`);
+  const match = setCookie.match(/(ework_auth=[^;]+)/);
+  if (!match) throw new Error(`reply-login: no ework_auth in set-cookie`);
+  replyCookie = match[1];
+  return replyCookie;
+}
+
+async function replyToIssue(repo: string, issueNumber: number, body: string): Promise<void> {
+  try {
+    if (!replyCookie) await loginReply();
+    let res = await fetch(`${EWORK_URL}/api/${repo}/issues/${issueNumber}/comment`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: replyCookie ?? "" },
+      body: JSON.stringify({ body }),
+    });
+    if (res.status === 401 || res.status === 302) {
+      await loginReply();
+      res = await fetch(`${EWORK_URL}/api/${repo}/issues/${issueNumber}/comment`, {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: replyCookie ?? "" },
+        body: JSON.stringify({ body }),
+      });
+    }
+    console.log(`[reply] ${repo}#${issueNumber} status=${res.status} bodyLen=${body.length}`);
+  } catch (e) {
+    console.log(`[reply-error] ${repo}#${issueNumber} ${e}`);
+  }
+}
 
 function sign(body: string): string {
   return createHmac("sha256", SECRET).update(body).digest("hex");
@@ -99,9 +148,32 @@ const server = Bun.serve({
       return new Response("invalid signature\n", { status: 401 });
     }
 
-    return new Response(JSON.stringify({ received: true, delivery, event }, null, 2), {
+    // Echo mode: return the exact raw body we received, preserving content-type.
+    // Lets callers (curl / ework debug) see round-trip what ework is sending.
+    //
+    // Fire-and-forget autonomous reply for issue_comment/created events when
+    // EWORK_TOKEN is configured. Marker prefix prevents infinite self-reply
+    // loops (bot replies to its own replies).
+    if (REPLY_MODE && event === "issue_comment") {
+      const p = parsed as {
+        action?: string;
+        issue?: { number?: number };
+        repository?: { full_name?: string };
+        comment?: { body?: string };
+      } | null;
+      const orig = p?.comment?.body ?? "";
+      if (p?.action === "created" && p.issue?.number && p.repository?.full_name && orig) {
+        if (orig.startsWith(REPLY_MARKER)) {
+          console.log(`[reply-skip] body starts with marker — own reply, no loop`);
+        } else {
+          void replyToIssue(p.repository.full_name, p.issue.number, `${REPLY_MARKER}\n\n${orig}`);
+        }
+      }
+    }
+
+    return new Response(rawBody, {
       status: 200,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": headers["content-type"] ?? "application/json" },
     });
   },
 });
