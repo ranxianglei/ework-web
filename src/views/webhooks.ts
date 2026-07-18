@@ -85,6 +85,10 @@ export function buildWebhooksPage(input: WebhooksPageInput): string {
       .join("") || `<p class="empty-page">这个项目还没有 webhook。<br>用下面的表单添加一个。</p>`;
 
   const formAction = `/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}/settings/webhooks`;
+  const settingsTabs = `<nav class="subtabs">
+    <a class="subtab active" href="${escapeAttr(formAction)}">Webhooks</a>
+    <a class="subtab" href="${escapeAttr(`/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}/settings/members`)}">成员</a>
+  </nav>`;
   const html = `<!doctype html>
 <html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -136,12 +140,16 @@ button[type=submit]{padding:.5rem 1.2rem;border:0;border-radius:6px;background:v
 .tabs{display:flex;gap:.3rem;padding:.5rem 1rem;border-bottom:1px solid var(--border);font-size:13px}
 .tab{padding:.3rem .7rem;border-radius:6px 6px 0 0;text-decoration:none;color:var(--text-muted)}
 .tab.active{background:var(--accent);color:#fff}
+.subtabs{display:flex;gap:.4rem;padding:.4rem 0 0;border-bottom:1px solid var(--border);margin-bottom:.9rem}
+.subtab{padding:.35rem .8rem;border-radius:6px 6px 0 0;font-size:13px;color:var(--text-muted)}
+.subtab.active{background:var(--bg-muted);color:var(--text);font-weight:600}
 </style></head><body>
 <header class="nav"><a href="/" style="color:var(--header-text)">🏠 ework</a></header>
 ${tabNavHTML("projects")}
 <main class="wrap">
-<div class="crumb"><a href="/projects">项目</a> · <a href="/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}">${escapeHtml(project.owner + "/" + project.name)}</a> · Webhooks</div>
+<div class="crumb"><a href="/projects">项目</a> · <a href="/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}">${escapeHtml(project.owner + "/" + project.name)}</a> · 设置</div>
 <h1>Webhooks</h1>
+${settingsTabs}
 <p class="hint">Payload 协议兼容 Gitea（<code>X-Gitea-Signature</code> HMAC-SHA256 hex），下游 Action 不用改。<br>事件: <code>issues</code> (opened/closed/reopened), <code>issue_comment</code> (created)。</p>
 ${cards}
 <form class="add-form" method="POST" action="${escapeAttr(formAction)}">

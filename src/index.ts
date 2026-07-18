@@ -43,6 +43,12 @@ import {
   canWriteProject,
   canAdminProject,
   ensureProjectBootstrapAdmin,
+  addProjectMember,
+  setProjectMemberRole,
+  removeProjectMember,
+  countProjectAdmins,
+  getProjectMembership,
+  type ProjectRole,
   type UserRow,
 } from "./store";
 import {
@@ -67,6 +73,7 @@ import {
 } from "./webhooks";
 import { classifyActor, type CommentView } from "./render/components";
 import { buildWebhooksPage } from "./views/webhooks";
+import { buildProjectMembersPage } from "./views/projectMembers";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR = join(__dirname, "static");
@@ -129,6 +136,9 @@ const COMMENT_POST_RE = /^\/api\/([^/]+)\/([^/]+)\/issues\/(\d+)\/comment$/;
 const UPLOAD_RE = /^\/api\/([^/]+)\/([^/]+)\/issues\/(\d+)\/upload$/;
 const ATTACHMENT_RE = /^\/attachments\/([0-9a-fA-F-]+)$/;
 const REPO_WEBHOOKS_RE = /^\/([^/]+)\/([^/]+)\/settings\/webhooks$/;
+const REPO_MEMBERS_RE = /^\/([^/]+)\/([^/]+)\/settings\/members$/;
+const REPO_MEMBER_ACTION_RE = /^\/([^/]+)\/([^/]+)\/settings\/members\/([^/]+)\/(role|remove)$/;
+const REPO_MEMBER_ADD_RE = /^\/([^/]+)\/([^/]+)\/settings\/members\/add$/;
 const WH_ACTION_RE = /^\/__wh\/(\d+)\/(delete|toggle|test)$/;
 const SESSIONS_RE = /^\/sessions$/;
 const SESSION_VIEW_RE = /^\/sessions\/([A-Za-z0-9_-]+)$/;
@@ -853,6 +863,73 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       }
     }
 
+    const memberAdd = url.pathname.match(REPO_MEMBER_ADD_RE);
+    if (memberAdd) {
+      const [, owner, repo] = memberAdd;
+      if (!(owner && repo)) return html(errorPage("bad path", ""), 400);
+      const project = getProject(owner, repo);
+      if (!project) return html(errorPage("项目不存在", ""), 404);
+      const back = `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/settings/members`;
+      if (!canAdminProject(project.id, ctx.user)) {
+        return Response.redirect(`${back}?err=${encodeURIComponent("无权限")}`, 303);
+      }
+      const form = await req.formData().catch(() => new FormData());
+      const login = String(form.get("login") ?? "").trim();
+      const role = String(form.get("role") ?? "writer") as ProjectRole;
+      if (!["reader", "writer", "admin"].includes(role)) {
+        return Response.redirect(`${back}?err=${encodeURIComponent("非法角色")}`, 303);
+      }
+      try {
+        addProjectMember(project.id, login, role);
+        return Response.redirect(`${back}?ok=1&ok_msg=${encodeURIComponent(`已添加 ${login} 为 ${role}`)}`, 303);
+      } catch (e) {
+        return Response.redirect(`${back}?err=${encodeURIComponent(errMsg(e))}`, 303);
+      }
+    }
+
+    const memberAction = url.pathname.match(REPO_MEMBER_ACTION_RE);
+    if (memberAction) {
+      const [, owner, repo, targetLogin, action] = memberAction;
+      if (!(owner && repo && targetLogin && action)) return html(errorPage("bad path", ""), 400);
+      const project = getProject(owner, repo);
+      if (!project) return html(errorPage("项目不存在", ""), 404);
+      const back = `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/settings/members`;
+      if (!canAdminProject(project.id, ctx.user)) {
+        return Response.redirect(`${back}?err=${encodeURIComponent("无权限")}`, 303);
+      }
+      try {
+        if (action === "role") {
+          const form = await req.formData().catch(() => new FormData());
+          const role = String(form.get("role") ?? "") as ProjectRole;
+          if (!["reader", "writer", "admin"].includes(role)) {
+            return Response.redirect(`${back}?err=${encodeURIComponent("非法角色")}`, 303);
+          }
+          // Guard last admin: don't let the only project admin demote themselves.
+          const current = getProjectMembership(project.id, targetLogin);
+          if (
+            current?.role === "admin" &&
+            role !== "admin" &&
+            countProjectAdmins(project.id) <= 1
+          ) {
+            return Response.redirect(`${back}?err=${encodeURIComponent("最后一个 admin 不能降级")}`, 303);
+          }
+          setProjectMemberRole(project.id, targetLogin, role);
+          return Response.redirect(`${back}?ok=1&ok_msg=${encodeURIComponent(`${targetLogin} → ${role}`)}`, 303);
+        }
+        if (action === "remove") {
+          const current = getProjectMembership(project.id, targetLogin);
+          if (current?.role === "admin" && countProjectAdmins(project.id) <= 1) {
+            return Response.redirect(`${back}?err=${encodeURIComponent("最后一个 admin 不能移除")}`, 303);
+          }
+          removeProjectMember(project.id, targetLogin);
+          return Response.redirect(`${back}?ok=1&ok_msg=${encodeURIComponent(`已移除 ${targetLogin}`)}`, 303);
+        }
+        return html(errorPage("bad action", ""), 400);
+      } catch (e) {
+        return Response.redirect(`${back}?err=${encodeURIComponent(errMsg(e))}`, 303);
+      }
+    }
+
     const whAction = url.pathname.match(WH_ACTION_RE);
     if (whAction) {
       const [, idStr, action] = whAction;
@@ -951,6 +1028,8 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     if (!(owner && repo)) return html(errorPage("404", "bad path"), 404);
     const project = getProject(owner, repo);
     if (!project) return html(errorPage("项目不存在", "项目未创建"), 404);
+    const isAdmin = canAdminProject(project.id, ctx.user);
+    if (!isAdmin) return html(errorPage("无权限", "需要该项目 admin 角色才能管理 webhook"), 403);
     const hooks = listWebhooks(project.id);
     const deliveriesByWebhook = new Map(
       hooks.map((h) => [h.id, listDeliveries(h.id, 10)] as const)
@@ -958,6 +1037,23 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     return html(
       buildWebhooksPage({ project, webhooks: hooks, deliveriesByWebhook })
     );
+  }
+
+  const membersPage = url.pathname.match(REPO_MEMBERS_RE);
+  if (membersPage) {
+    const [, owner, repo] = membersPage;
+    if (!(owner && repo)) return html(errorPage("404", "bad path"), 404);
+    const project = getProject(owner, repo);
+    if (!project) return html(errorPage("项目不存在", "项目未创建"), 404);
+    // Lazy bootstrap: site-admin opening a pre-RBAC project auto-inserts as admin.
+    if (ctx.user!.is_admin === 1) ensureProjectBootstrapAdmin(project.id, ctx.user!.login);
+    if (!canAdminProject(project.id, ctx.user)) {
+      return html(errorPage("无权限", "需要该项目 admin 角色才能管理成员"), 403);
+    }
+    const flashKind = url.searchParams.get("ok") === "1" ? "ok" : url.searchParams.get("err") ? "err" : null;
+    const flashMsg = flashKind === "ok" ? (url.searchParams.get("ok_msg") ?? "") : (url.searchParams.get("err") ?? "");
+    const flash = flashKind ? { kind: flashKind as "ok" | "err", msg: flashMsg } : null;
+    return html(buildProjectMembersPage(ctx.user!, project, flash));
   }
 
   const repoMatch = url.pathname.match(REPO_RE);
