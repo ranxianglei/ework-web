@@ -423,7 +423,7 @@ export function getAttachment(uuid: string): AttachmentRow | null {
   return (rawDB().query("SELECT * FROM attachments WHERE uuid = ?").get(uuid) as AttachmentRow | null) ?? null;
 }
 
-const LOGIN_RE = /^[A-Za-z0-9_.-]{1,64}$/;
+const LOGIN_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 async function hashPassword(plain: string): Promise<string> {
   // Algorithm is encoded in the modular crypt string ($2b$10$...), so future

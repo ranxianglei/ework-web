@@ -20,6 +20,7 @@ function userTableColumns(db: Database): Set<string> {
 // schema.sql CREATE TABLE only applies full column list to fresh DBs;
 // existing DBs need these ALTERs to gain new columns. Idempotent via PRAGMA check.
 function migrateUsersTable(db: Database): void {
+  if (userTableColumns(db).size === 0) return; // users doesn't exist yet; schema.sql will create it
   const have = userTableColumns(db);
   const additions: { col: string; ddl: string }[] = [
     { col: "password_hash", ddl: "ALTER TABLE users ADD COLUMN password_hash TEXT" },

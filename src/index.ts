@@ -4,7 +4,7 @@ import { readFileSync, appendFileSync } from "fs";
 import { loadConfig, DB_OVERRIDABLE, parseOverride, resolveTtsBackend } from "./config";
 import type { Config } from "./config";
 import { setConfig } from "./db";
-import { checkAuth, makeAuthCookieHeader, loginHTML, sanitizeNext } from "./auth";
+import { checkAuth, makeAuthCookieHeader, clearAuthCookieHeader, loginHTML, sanitizeNext, ensureBootstrapAdmin } from "./auth";
 import { OpencodeClient, OpencodeError } from "./opencode";
 import { renderMarkdown } from "./render/markdown";
 import { buildIssueThread, fetchIssuePage, fetchIssueSince, errorPage } from "./views/issueThread";
@@ -28,6 +28,10 @@ import {
   setIssueState,
   createAttachment,
   getAttachment,
+  verifyUserPassword,
+  updateUser,
+  countAdmins,
+  type UserRow,
 } from "./store";
 import {
   newAttachmentUUID,
@@ -126,7 +130,7 @@ const server = Bun.serve({
     const url = new URL(req.url);
     const ip = remoteAddr(req, server);
     const start = Date.now();
-    const ctx = { authed: false };
+    const ctx = { authed: false, user: null as UserRow | null };
     let res: Response;
     try {
       res = await handle(req, url, ip, ctx);
@@ -199,7 +203,7 @@ function chunkTextTTS(text: string, max = 120): string[] {
   return out;
 }
 
-async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean }): Promise<Response> {
+async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean; user: UserRow | null }): Promise<Response> {
   if (url.pathname === "/static/app.js") return staticAsset("app.js", "text/javascript; charset=utf-8", req);
   if (url.pathname === "/static/session.js") return staticAsset("session.js", "text/javascript; charset=utf-8", req);
   if (url.pathname === "/static/file.js") return staticAsset("file.js", "text/javascript; charset=utf-8", req);
@@ -220,18 +224,42 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       if (!rateLimit(`login:${ip}`, 5, 5 / (15 * 60))) {
         return html(loginHTML(next, "尝试过多，15 分钟后再试"), 429);
       }
-      const token = String(form.get("token") ?? "");
+      const login = String(form.get("login") ?? "").trim();
+      const password = String(form.get("password") ?? "");
+      const token = String(form.get("token") ?? "").trim();
+
+      // Token wins over login/password if both supplied (migration path).
+      let resolvedLogin: string | null = null;
       if (token && token === cfg.authToken) {
-        const setCookie = await makeAuthCookieHeader(cfg);
+        resolvedLogin = cfg.operatorLogin;
+      } else if (login && password) {
+        const u = await verifyUserPassword(login, password);
+        if (u) resolvedLogin = u.login;
+      }
+
+      if (resolvedLogin) {
+        const setCookie = await makeAuthCookieHeader(cfg, resolvedLogin);
         return new Response(null, {
           status: 302,
           headers: { location: next, "set-cookie": setCookie },
         });
       }
-      return html(loginHTML(next, "token 不对，再试一次"), 401);
+      const err = token
+        ? "token 不对"
+        : login || password
+          ? "用户名或密码错误"
+          : "请填写用户名密码或共享 token";
+      return html(loginHTML(next, err), 401);
     }
     const next = sanitizeNext(url.searchParams.get("next") ?? "/");
     return html(loginHTML(next));
+  }
+
+  if (url.pathname === "/logout" && req.method === "POST") {
+    return new Response(null, {
+      status: 302,
+      headers: { location: "/login", "set-cookie": clearAuthCookieHeader(cfg) },
+    });
   }
 
   const auth = await checkAuth(req, cfg);
@@ -239,6 +267,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const next = sanitizeNext(url.pathname + url.search);
     return Response.redirect(`${url.origin}/login?next=${encodeURIComponent(next)}`, 302);
   }
+  ctx.user = auth.user;
   ctx.authed = true;
 
   if (url.pathname.startsWith("/api/") && !rateLimit(`api:${ip}`, 60, 1)) {
@@ -793,6 +822,17 @@ function createProjectSafe(owner: string, name: string) {
 function errMsg(e: unknown): string {
   return e instanceof Error ? `${e.name}: ${e.message}` : String(e);
 }
+
+// Boot-time: ensure the configured operator user exists. If it's a fresh DB
+// with no admins, promote it. Covers both fresh installs and the legacy-token
+// migration path (legacy cookies resolve to this user).
+(() => {
+  const op = ensureBootstrapAdmin(cfg.operatorLogin);
+  if (op.is_admin === 0 && countAdmins() === 0) {
+    updateUser(op.login, { is_admin: true });
+    console.log(`ework: bootstrapped operator '${op.login}' as admin`);
+  }
+})();
 
 console.log(`ework listening on http://${cfg.host}:${cfg.port} (writes=${cfg.writesEnabled}, operator=${cfg.operatorLogin})`);
 

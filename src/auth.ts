@@ -1,14 +1,15 @@
 import type { Config } from "./config";
+import { getUserByLogin, ensureUser, type UserRow } from "./store";
 
-// Token-cookie auth for a READ-ONLY viewer (not a strong session system — for
-// hardened deploy, also front with Caddy basic-auth / mTLS). Auth via either:
-//   (a) a one-shot ?token=... link (cookie set, then redirect without it), or
-//   (b) the /login form (preferred UX — no token ever in a shareable URL).
-// Either way the HMAC-signed cookie lasts AUTH_COOKIE_MAX_AGE_SECONDS; after
-// that all navigation is token-free.
+// Per-user token-cookie auth. Cookie value is HMAC-signed and carries login +
+// issued-at, so the server is stateless (no session table). Two cookie formats
+// coexist for one release to avoid breaking existing sessions on upgrade:
+//   v2 (new): "v2.<login>.<issued_unix>.<sig>" — resolves to that user
+//   legacy:   "<token>.<sig>" — resolves to cfg.operatorLogin (shared-token era)
 
 export const AUTH_COOKIE_NAME = "ework_auth";
 export const AUTH_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
+const COOKIE_VERSION = "v2";
 
 async function hmac(secret: string, msg: string): Promise<string> {
   const key = await crypto.subtle.importKey(
@@ -37,8 +38,7 @@ function parseCookies(header: string | null): Record<string, string> {
 
 export interface AuthResult {
   ok: boolean;
-  setCookie?: string;
-  redirectLocation?: string;
+  user: UserRow | null;
 }
 
 export function authCookieName(cfg: Config): string {
@@ -47,12 +47,21 @@ export function authCookieName(cfg: Config): string {
   return cfg.secureCookie ? `__Host-${AUTH_COOKIE_NAME}` : AUTH_COOKIE_NAME;
 }
 
-export async function makeAuthCookieHeader(cfg: Config): Promise<string> {
-  const sig = await hmac(cfg.cookieSecret, cfg.authToken);
-  const value = `${cfg.authToken}.${sig}`;
+export async function makeAuthCookieHeader(cfg: Config, login: string): Promise<string> {
+  const issued = Math.floor(Date.now() / 1000);
+  const payload = `${COOKIE_VERSION}.${login}.${issued}`;
+  const sig = await hmac(cfg.cookieSecret, payload);
+  const value = `${payload}.${sig}`;
   const flags = ["Path=/", "HttpOnly", `Max-Age=${AUTH_COOKIE_MAX_AGE_SECONDS}`, "SameSite=Lax"];
   if (cfg.secureCookie) flags.push("Secure");
   return `${authCookieName(cfg)}=${value}; ${flags.join("; ")}`;
+}
+
+// Logout: set Max-Age=0 so the browser drops the cookie immediately.
+export function clearAuthCookieHeader(cfg: Config): string {
+  const flags = ["Path=/", "HttpOnly", "Max-Age=0", "SameSite=Lax"];
+  if (cfg.secureCookie) flags.push("Secure");
+  return `${authCookieName(cfg)}=; ${flags.join("; ")}`;
 }
 
 function ctEqual(a: string, b: string): boolean {
@@ -64,23 +73,52 @@ function ctEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
+// v2 cookie parse: value is "v2.<login>.<issued>.<sig>" where login is
+// guaranteed not to contain "." (enforced by LOGIN_RE in store.ts).
+function parseV2Cookie(value: string): { login: string; issued: string; sig: string } | null {
+  const parts = value.split(".");
+  if (parts.length !== 4 || parts[0] !== COOKIE_VERSION) return null;
+  const [, login, issued, sig] = parts;
+  if (!login || !issued || !sig) return null;
+  return { login, issued, sig };
+}
+
 export async function checkAuth(req: Request, cfg: Config): Promise<AuthResult> {
   const cookies = parseCookies(req.headers.get("cookie"));
   const cookieVal = cookies[authCookieName(cfg)];
+  if (!cookieVal) return { ok: false, user: null };
 
-  if (cookieVal) {
-    const dot = cookieVal.lastIndexOf(".");
-    if (dot > 0) {
-      const token = cookieVal.slice(0, dot);
-      const sig = cookieVal.slice(dot + 1);
-      const expected = await hmac(cfg.cookieSecret, token);
-      if (ctEqual(sig, expected) && ctEqual(token, cfg.authToken)) {
-        return { ok: true };
-      }
-    }
+  if (cookieVal.startsWith(`${COOKIE_VERSION}.`)) {
+    const parsed = parseV2Cookie(cookieVal);
+    if (!parsed) return { ok: false, user: null };
+    const payload = `${COOKIE_VERSION}.${parsed.login}.${parsed.issued}`;
+    const expected = await hmac(cfg.cookieSecret, payload);
+    if (!ctEqual(parsed.sig, expected)) return { ok: false, user: null };
+    const user = getUserByLogin(parsed.login);
+    if (!user || !user.is_active) return { ok: false, user: null };
+    return { ok: true, user };
   }
 
-  return { ok: false };
+  // Legacy format: "<token>.<sig>". Accept only if token == cfg.authToken,
+  // then resolve to the configured operator user (auto-created on boot by
+  // ensureBootstrapAdmin in index.ts).
+  const dot = cookieVal.lastIndexOf(".");
+  if (dot <= 0) return { ok: false, user: null };
+  const token = cookieVal.slice(0, dot);
+  const sig = cookieVal.slice(dot + 1);
+  const expected = await hmac(cfg.cookieSecret, token);
+  if (!ctEqual(sig, expected) || !ctEqual(token, cfg.authToken)) {
+    return { ok: false, user: null };
+  }
+  const user = getUserByLogin(cfg.operatorLogin);
+  if (!user || !user.is_active) return { ok: false, user: null };
+  return { ok: true, user };
+}
+
+export function ensureBootstrapAdmin(login: string): UserRow {
+  const existing = getUserByLogin(login);
+  if (existing) return existing;
+  return ensureUser(login, "human");
 }
 
 // Same-origin relative targets only. Rejects "//" and "/\" — browsers collapse a
@@ -114,19 +152,30 @@ export function loginHTML(next: string, error?: string): string {
 body{font-family:system-ui,-apple-system,sans-serif;background:#1b1b1b;color:#e6e6e6;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
 .box{background:#262626;border:1px solid #373737;border-radius:12px;padding:1.8rem;max-width:360px;width:90%}
 h1{font-size:18px;margin:0 0 1.2rem;font-weight:600}
+label{display:block;font-size:12px;color:#9a9a9a;margin:0 0 .25rem}
 input{width:100%;box-sizing:border-box;padding:.75rem;border:1px solid #373737;border-radius:8px;background:#1b1b1b;color:#e6e6e6;font:inherit;margin-bottom:.8rem}
 input:focus{outline:none;border-color:#2da44e}
 button{width:100%;padding:.75rem;border:none;border-radius:8px;background:#2da44e;color:#fff;font:600 14px system-ui,sans-serif;cursor:pointer}
 button:hover{background:#218742}
 .err{color:#f85149;font-size:13px;margin-bottom:.8rem}
 .hint{color:#9a9a9a;font-size:12px;line-height:1.5;margin-top:1rem}
+details{margin-top:1rem;border-top:1px solid #373737;padding-top:1rem}
+summary{cursor:pointer;color:#9a9a9a;font-size:12px;outline:none}
+details[open] summary{margin-bottom:.6rem;color:#e6e6e6}
 </style></head><body>
-<form class="box" method="POST" action="/login" autocomplete="off">
+<form class="box" method="POST" action="/login" autocomplete="on">
 <h1>🔒 ework 登录</h1>
 ${err}
-<input type="password" name="token" placeholder="访问 token" autofocus required>
+<label for="f-login">用户名</label>
+<input id="f-login" name="login" type="text" autocomplete="username" autofocus required>
+<label for="f-pw">密码</label>
+<input id="f-pw" name="password" type="password" autocomplete="current-password" required>
 <input type="hidden" name="next" value="${esc(next)}">
 <button type="submit">登录</button>
-<div class="hint">登录后写 cookie，30 天内、所有页面都不用再带 token；链接可随意分享，不含 token。</div>
+<details>
+<summary>或使用共享 token（仅限管理员迁移期）</summary>
+<input name="token" type="password" autocomplete="off" placeholder="WORK_TOKEN（如使用此方式登录）">
+</details>
+<div class="hint">登录后 cookie 30 天有效；用户名密码登录后可在「我的」页面修改密码。</div>
 </form></body></html>`;
 }
