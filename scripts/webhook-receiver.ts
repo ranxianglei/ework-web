@@ -1,19 +1,21 @@
 #!/usr/bin/env bun
 // Test receiver for ework webhooks. Listens on a port, prints each delivery,
-// writes every received payload to a JSONL log file, and (when EWORK_TOKEN is
-// set) autonomously replies to issue_comment/created events by posting a
-// marked echo comment back to the issue — closing the loop end-to-end.
+// writes every received payload to a JSONL log file, and (when EWORK_TOKEN or
+// EWORK_PAT is set) autonomously replies to issue_comment/created events by
+// posting a marked echo comment back to the issue — closing the loop E2E.
 //
 // Usage:
 //   bun run scripts/webhook-receiver.ts [port] [secret]
-//   PORT=8099 SECRET=topsecret EWORK_TOKEN=xxx bun run scripts/webhook-receiver.ts
+//   PORT=8099 SECRET=topsecret EWORK_PAT=xxx bun run scripts/webhook-receiver.ts
 //
 // Env:
 //   PORT          listen port (default 8099)
 //   SECRET        HMAC secret; if unset, signature verification is skipped
 //   LOG_FILE      JSONL log path (default ./webhook-received.jsonl)
 //   EWORK_URL     ework base URL for reply mode (default http://127.0.0.1:1196)
-//   EWORK_TOKEN   ework token; enables autonomous reply mode when set
+//   EWORK_PAT     ework personal access token (preferred; sent as Bearer)
+//   EWORK_TOKEN   ework shared operator token (legacy; logs in as operator)
+//   REPLY_MARKER  prefix that identifies this bot's own replies (loop guard)
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { mkdirSync, appendFileSync } from "node:fs";
@@ -23,15 +25,16 @@ const PORT = Number(process.env.PORT ?? process.argv[2] ?? "8099");
 const SECRET = process.env.SECRET ?? process.argv[3] ?? "";
 const LOG_FILE = resolve(process.env.LOG_FILE ?? "./webhook-received.jsonl");
 const EWORK_URL = (process.env.EWORK_URL ?? "http://127.0.0.1:1196").replace(/\/$/, "");
+const EWORK_PAT = process.env.EWORK_PAT ?? "";
 const EWORK_TOKEN = process.env.EWORK_TOKEN ?? "";
-const REPLY_MODE = !!EWORK_TOKEN;
-const REPLY_MARKER = "[bot] echo:";
+const REPLY_MARKER = process.env.REPLY_MARKER ?? "[bot] echo:";
 
 mkdirSync(resolve(LOG_FILE, ".."), { recursive: true });
 
 let replyCookie: string | null = null;
 
 async function loginReply(): Promise<string> {
+  if (!EWORK_TOKEN) throw new Error("reply-login requested but EWORK_TOKEN is not set");
   const r = await fetch(`${EWORK_URL}/login`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -41,28 +44,32 @@ async function loginReply(): Promise<string> {
   const setCookie = r.headers.get("set-cookie");
   if (!setCookie) throw new Error(`reply-login: no set-cookie, status=${r.status}`);
   const match = setCookie.match(/(ework_auth=[^;]+)/);
-  if (!match) throw new Error(`reply-login: no ework_auth in set-cookie`);
+  if (!match) throw new Error("reply-login: no ework_auth in set-cookie");
   replyCookie = match[1];
   return replyCookie;
 }
 
 async function replyToIssue(repo: string, issueNumber: number, body: string): Promise<void> {
   try {
-    if (!replyCookie) await loginReply();
-    let res = await fetch(`${EWORK_URL}/api/${repo}/issues/${issueNumber}/comment`, {
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (EWORK_PAT) {
+      headers.authorization = `Bearer ${EWORK_PAT}`;
+    } else {
+      if (!replyCookie) await loginReply();
+      headers.cookie = replyCookie ?? "";
+    }
+    const doFetch = () => fetch(`${EWORK_URL}/api/${repo}/issues/${issueNumber}/comment`, {
       method: "POST",
-      headers: { "content-type": "application/json", cookie: replyCookie ?? "" },
+      headers,
       body: JSON.stringify({ body }),
     });
-    if (res.status === 401 || res.status === 302) {
+    let res = await doFetch();
+    if (!EWORK_PAT && (res.status === 401 || res.status === 302)) {
       await loginReply();
-      res = await fetch(`${EWORK_URL}/api/${repo}/issues/${issueNumber}/comment`, {
-        method: "POST",
-        headers: { "content-type": "application/json", cookie: replyCookie ?? "" },
-        body: JSON.stringify({ body }),
-      });
+      headers.cookie = replyCookie ?? "";
+      res = await doFetch();
     }
-    console.log(`[reply] ${repo}#${issueNumber} status=${res.status} bodyLen=${body.length}`);
+    console.log(`[reply] ${repo}#${issueNumber} status=${res.status} bodyLen=${body.length} auth=${EWORK_PAT ? "PAT" : "cookie"}`);
   } catch (e) {
     console.log(`[reply-error] ${repo}#${issueNumber} ${e}`);
   }
@@ -154,7 +161,7 @@ const server = Bun.serve({
     // Fire-and-forget autonomous reply for issue_comment/created events when
     // EWORK_TOKEN is configured. Marker prefix prevents infinite self-reply
     // loops (bot replies to its own replies).
-    if (REPLY_MODE && event === "issue_comment") {
+    if ((EWORK_PAT || EWORK_TOKEN) && event === "issue_comment") {
       const p = parsed as {
         action?: string;
         issue?: { number?: number };
