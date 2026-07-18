@@ -135,6 +135,19 @@ export function ensureBootstrapAdmin(login: string): UserRow {
   return ensureUser(login, "human");
 }
 
+// Reserved system user for automated actions (cron, import jobs, future CI
+// integration). kind=system, no password (cannot login via UI). Created on
+// boot if missing. UI guards prevent disabling/deleting it.
+export function ensureBootstrapSystem(login: string): UserRow {
+  const existing = getUserByLogin(login);
+  if (existing) return existing;
+  return ensureUser(login, "system");
+}
+
+export function isReservedSystemLogin(login: string, cfg: Config): boolean {
+  return login === cfg.systemLogin;
+}
+
 // Same-origin relative targets only. Rejects "//" and "/\" — browsers collapse a
 // leading "/\" to "//" (protocol-relative), an open-redirect bypass (M1).
 export function sanitizeNext(next: string): string {

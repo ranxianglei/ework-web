@@ -4,7 +4,7 @@ import { readFileSync, appendFileSync } from "fs";
 import { loadConfig, DB_OVERRIDABLE, parseOverride, resolveTtsBackend } from "./config";
 import type { Config } from "./config";
 import { setConfig } from "./db";
-import { checkAuth, makeAuthCookieHeader, clearAuthCookieHeader, loginHTML, sanitizeNext, ensureBootstrapAdmin } from "./auth";
+import { checkAuth, makeAuthCookieHeader, clearAuthCookieHeader, loginHTML, sanitizeNext, ensureBootstrapAdmin, ensureBootstrapSystem, isReservedSystemLogin } from "./auth";
 import { OpencodeClient, OpencodeError } from "./opencode";
 import { renderMarkdown } from "./render/markdown";
 import { buildIssueThread, fetchIssuePage, fetchIssueSince, errorPage } from "./views/issueThread";
@@ -642,6 +642,9 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
   if (userActionRe && req.method === "POST") {
     const [, targetLogin, action] = userActionRe;
     if (!(targetLogin && action)) return html(errorPage("bad path", ""), 400);
+    if (isReservedSystemLogin(targetLogin, cfg)) {
+      return Response.redirect(`${url.origin}/admin/users?err=${encodeURIComponent("系统保留账户不能修改")}`, 303);
+    }
     try {
       if (action === "reset-password") {
         const form = await req.formData().catch(() => new FormData());
@@ -1090,12 +1093,16 @@ function errMsg(e: unknown): string {
 // Boot-time: ensure the configured operator user exists. If it's a fresh DB
 // with no admins, promote it. Covers both fresh installs and the legacy-token
 // migration path (legacy cookies resolve to this user).
+// Also ensure the reserved system user exists (kind=system, used to attribute
+// automated actions like future cron / import jobs; not login-able).
 (() => {
   const op = ensureBootstrapAdmin(cfg.operatorLogin);
   if (op.is_admin === 0 && countAdmins() === 0) {
     updateUser(op.login, { is_admin: true });
     console.log(`ework: bootstrapped operator '${op.login}' as admin`);
   }
+  const sys = ensureBootstrapSystem(cfg.systemLogin);
+  void sys;
 })();
 
 console.log(`ework listening on http://${cfg.host}:${cfg.port} (writes=${cfg.writesEnabled}, operator=${cfg.operatorLogin})`);

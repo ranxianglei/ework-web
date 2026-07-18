@@ -21,6 +21,10 @@ export const configSchema = z.object({
     .string()
     .regex(/^[A-Za-z0-9_-]+$/, "WORK_OPERATOR_LOGIN must be a plain login (alphanumeric)")
     .default("dog"),
+  systemLogin: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]+$/, "WORK_SYSTEM_LOGIN must be a plain login (alphanumeric)")
+    .default("ework-actions"),
   upstreamTimeoutMs: z.coerce.number().default(15000),
   secureCookie: z.boolean().default(false),
   // ework is human-facing; writes on by default. Flip off to use as a read-only mirror.
@@ -108,6 +112,7 @@ export function loadConfig(): Config {
     authToken: process.env.WORK_TOKEN,
     cookieSecret: process.env.WORK_COOKIE_SECRET,
     operatorLogin: process.env.WORK_OPERATOR_LOGIN,
+    systemLogin: process.env.WORK_SYSTEM_LOGIN,
     upstreamTimeoutMs: process.env.WORK_UPSTREAM_TIMEOUT_MS,
     secureCookie: process.env.WORK_SECURE_COOKIE === "true",
     writesEnabled: (process.env.WORK_WRITES_ENABLED ?? "true") === "true",
