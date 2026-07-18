@@ -26,6 +26,24 @@ PROJECT_OWNER="e2e"
 PROJECT_REPO="wh-test-$(date +%s)"
 BASE="http://127.0.0.1:${PORT}"
 
+banner() { printf "\n=== %s ===\n" "$1"; }
+info() { printf "  → %s\n" "$1"; }
+pass() { printf "  ✅ %s\n" "$1"; }
+fail() { printf "  ❌ %s\n" "$1"; exit 1; }
+
+# Locate bun: prefer PATH, fall back to the known install path used on this host.
+BUN_BIN="${BUN:-$(command -v bun || true)}"
+if [[ -z "$BUN_BIN" ]]; then
+  for cand in \
+    /home/user/.local/lib/node-v25.9.0-linux-x64/lib/node_modules/bun/bin/bun.exe \
+    /home/user/.bun/bin/bun \
+    /usr/local/bin/bun; do
+    if [[ -x "$cand" ]]; then BUN_BIN="$cand"; break; fi
+  done
+fi
+[[ -n "$BUN_BIN" ]] || { echo "bun not found; set BUN=/path/to/bun or put it on PATH" >&2; exit 1; }
+info "using bun: ${BUN_BIN}"
+
 # Receiver must run in background; we manage its lifecycle.
 RECEIVER_PID=""
 
@@ -38,15 +56,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-banner() { printf "\n=== %s ===\n" "$1"; }
-info() { printf "  → %s\n" "$1"; }
-pass() { printf "  ✅ %s\n" "$1"; }
-fail() { printf "  ❌ %s\n" "$1"; exit 1; }
-
 banner "1/7 — booting webhook receiver on :${RECEIVER_PORT}"
 rm -f "$RECEIVER_LOG"
 SECRET="$SECRET" LOG_FILE="$RECEIVER_LOG" PORT="$RECEIVER_PORT" \
-  bun run "$(dirname "$0")/webhook-receiver.ts" >/tmp/ework-receiver.out 2>&1 &
+  "$BUN_BIN" run "$(dirname "$0")/webhook-receiver.ts" >/tmp/ework-receiver.out 2>&1 &
 RECEIVER_PID=$!
 info "pid=$RECEIVER_PID"
 
@@ -72,17 +85,15 @@ pass "project created"
 
 banner "4/7 — register webhook at receiver"
 curl -fsS -b "$COOKIE_JAR" -X POST \
-  --data-urlencode "project_id=$(curl -fsS -b "$COOKIE_JAR" "${BASE}/${PROJECT_OWNER}/${PROJECT_REPO}/issues" | grep -oE 'project_id=[0-9]+' | head -1 | cut -d= -f2 || echo 0)" \
   --data-urlencode "url=http://127.0.0.1:${RECEIVER_PORT}/hook" \
   --data-urlencode "secret=${SECRET}" \
   --data-urlencode "events=issues" \
   --data-urlencode "events=issue_comment" \
-  "${BASE}/__wh" -o /dev/null
+  "${BASE}/${PROJECT_OWNER}/${PROJECT_REPO}/settings/webhooks" -o /dev/null
 pass "webhook registered"
 
-# Re-fetch project_id reliably from /projects page
-PROJECT_ID="$(curl -fsS -b "$COOKIE_JAR" "${BASE}/projects" | grep -oE "href=\"/${PROJECT_OWNER}/${PROJECT_REPO}\"" | head -1 || true)"
-info "project page found: ${PROJECT_ID:-no}"
+PROJECT_PAGE="${BASE}/${PROJECT_OWNER}/${PROJECT_REPO}/issues"
+info "project page: ${PROJECT_PAGE}"
 
 banner "5/7 — trigger events (create issue, comment, close, reopen)"
 # Create issue via the new-issue form
@@ -127,7 +138,7 @@ banner "7/7 — verify receiver log"
 [[ -s "$RECEIVER_LOG" ]] || fail "no deliveries received"
 DELIVERY_COUNT=$(wc -l < "$RECEIVER_LOG")
 info "received ${DELIVERY_COUNT} deliveries:"
-cat "$RECEIVER_LOG" | bun -e '
+cat "$RECEIVER_LOG" | "$BUN_BIN" -e '
   const lines = require("fs").readFileSync(0, "utf8").trim().split("\n");
   const events = { issues_opened: 0, issues_closed: 0, issues_reopened: 0, issue_comment: 0, other: 0 };
   let sigValid = 0, sigInvalid = 0;

@@ -22,3 +22,6 @@ build/
 *~
 
 # ework runtime (systemd runs from ~/.local/share/ework/, not here)
+
+# webhook test artifacts (scripts/webhook-test.sh)
+webhook-received.jsonl
