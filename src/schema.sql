@@ -140,6 +140,9 @@ CREATE TABLE IF NOT EXISTS personal_access_tokens (
   token_hash       TEXT NOT NULL,
   token_last_eight TEXT NOT NULL,
   scopes           TEXT NOT NULL DEFAULT '[]',
+  -- JSON array of CIDR strings (IPv4). Empty = no restriction. Validated in
+  -- store.ts createPat; verifyPat checks the request IP against this list.
+  ip_allowlist     TEXT NOT NULL DEFAULT '[]',
   expires_at       TEXT,
   last_used_at     TEXT,
   created_at       TEXT NOT NULL,

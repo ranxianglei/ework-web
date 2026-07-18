@@ -564,6 +564,7 @@ export interface PatRow {
   token_hash: string;
   token_last_eight: string;
   scopes: string;
+  ip_allowlist: string;
   expires_at: string | null;
   last_used_at: string | null;
   created_at: string;
@@ -574,6 +575,7 @@ export interface CreatePatInput {
   user_login: string;
   name: string;
   scopes?: string[];
+  ip_allowlist?: string[];
   expires_at?: string | null;
 }
 
@@ -583,6 +585,63 @@ export interface CreatePatResult {
 }
 
 const PAT_NAME_RE = /^[\w\u4e00-\u9fa5 .\-()]{1,64}$/;
+const CIDR4_RE = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\/(\d{1,2}))?$/;
+
+function parseIPv4(s: string): number[] | null {
+  const m = s.trim().match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return null;
+  const parts = [m[1], m[2], m[3], m[4]].map((x) => parseInt(x ?? "", 10));
+  if (parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null;
+  return parts;
+}
+
+function ipInCidr(ip: string, cidr: string): boolean {
+  const m = cidr.trim().match(CIDR4_RE);
+  if (!m) return false;
+  const net = [m[1], m[2], m[3], m[4]].map((x) => parseInt(x ?? "", 10));
+  if (net.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false;
+  const ipParts = parseIPv4(ip);
+  if (!ipParts) return false;
+  const prefix = m[5] !== undefined ? parseInt(m[5], 10) : 32;
+  if (prefix < 0 || prefix > 32) return false;
+  const netLong = (((net[0] ?? 0) << 24) | ((net[1] ?? 0) << 16) | ((net[2] ?? 0) << 8) | (net[3] ?? 0)) >>> 0;
+  const ipLong = (((ipParts[0] ?? 0) << 24) | ((ipParts[1] ?? 0) << 16) | ((ipParts[2] ?? 0) << 8) | (ipParts[3] ?? 0)) >>> 0;
+  const mask = prefix === 0 ? 0 : (prefix === 32 ? -1 : (-1 << (32 - prefix))) >>> 0;
+  return (netLong & mask) === (ipLong & mask);
+}
+
+export function parsePatIpAllowlist(raw: string): string[] {
+  try {
+    const v = JSON.parse(raw);
+    if (!Array.isArray(v)) return [];
+    return v.filter((x): x is string => typeof x === "string");
+  } catch {
+    return [];
+  }
+}
+
+// Returns true if `ip` satisfies the allowlist. Empty allowlist = allow all.
+// ip is required (caller must pass the request IP, "unknown" never matches).
+export function ipAllowedBy(ip: string | null | undefined, allowlist: string[]): boolean {
+  if (allowlist.length === 0) return true;
+  if (!ip) return false;
+  // Strip port from "[v6]:port" or "v4:port" forms (best-effort).
+  const cleanIp = ip.replace(/^\[|\]$/g, "").replace(/:\d+$/, "");
+  return allowlist.some((cidr) => ipInCidr(cleanIp, cidr));
+}
+
+function validateCidrList(input: string[] | undefined): string[] {
+  if (!input || input.length === 0) return [];
+  if (input.length > 16) throw new StoreError(400, "IP allowlist 最多 16 条 CIDR");
+  const out: string[] = [];
+  for (const raw of input) {
+    const cidr = raw.trim();
+    if (!cidr) continue;
+    if (!CIDR4_RE.test(cidr)) throw new StoreError(400, `非法 CIDR: ${cidr}（仅支持 IPv4）`);
+    out.push(cidr);
+  }
+  return out;
+}
 
 function randomHex(bytes: number): string {
   return Buffer.from(crypto.getRandomValues(new Uint8Array(bytes))).toString("hex");
@@ -611,6 +670,7 @@ export async function createPat(input: CreatePatInput): Promise<CreatePatResult>
   for (const s of scopes) {
     if (!/^[a-z:_]{1,32}$/.test(s)) throw new StoreError(400, `scope 含非法字符: ${s}`);
   }
+  const ipAllowlist = validateCidrList(input.ip_allowlist);
   let expiresAt: string | null = null;
   if (input.expires_at) {
     const t = Date.parse(input.expires_at);
@@ -627,10 +687,10 @@ export async function createPat(input: CreatePatInput): Promise<CreatePatResult>
   const info = db
     .query(
       `INSERT INTO personal_access_tokens
-         (user_login, name, salt, token_hash, token_last_eight, scopes, expires_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+         (user_login, name, salt, token_hash, token_last_eight, scopes, ip_allowlist, expires_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(login, name, salt, tokenHash, lastEight, JSON.stringify(scopes), expiresAt, ts);
+    .run(login, name, salt, tokenHash, lastEight, JSON.stringify(scopes), JSON.stringify(ipAllowlist), expiresAt, ts);
   const row = getPat(Number(info.lastInsertRowid));
   if (!row) throw new StoreError(500, "PAT 创建后无法读取");
   return { row, plaintext };
@@ -684,7 +744,7 @@ export function revokePatAsAdmin(id: number): void {
     .run(now(), id);
 }
 
-export async function verifyPat(rawToken: string): Promise<UserRow | null> {
+export async function verifyPat(rawToken: string, ip?: string | null): Promise<UserRow | null> {
   if (!/^[0-9a-f]{40}$/.test(rawToken)) return null;
   const lastEight = rawToken.slice(-8);
   const candidates = rawDB()
@@ -696,6 +756,8 @@ export async function verifyPat(rawToken: string): Promise<UserRow | null> {
     if (row.expires_at && Date.parse(row.expires_at) < nowMs) continue;
     const expected = sha256Hex(row.salt + rawToken);
     if (!ctEqualBuf(Buffer.from(expected, "hex"), Buffer.from(row.token_hash, "hex"))) continue;
+    const allowlist = parsePatIpAllowlist(row.ip_allowlist ?? "[]");
+    if (!ipAllowedBy(ip, allowlist)) continue;
     const user = getUserByLogin(row.user_login);
     if (!user || !user.is_active) return null;
     rawDB()

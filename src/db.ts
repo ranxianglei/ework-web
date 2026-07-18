@@ -36,6 +36,19 @@ function migrateUsersTable(db: Database): void {
   db.exec("CREATE INDEX IF NOT EXISTS users_is_admin ON users (is_admin) WHERE is_admin = 1");
 }
 
+function tableColumns(db: Database, name: string): Set<string> {
+  const rows = db.query(`PRAGMA table_info(${name})`).all() as { name: string }[];
+  return new Set(rows.map((r) => r.name));
+}
+
+function migratePatTable(db: Database): void {
+  const have = tableColumns(db, "personal_access_tokens");
+  if (have.size === 0) return;
+  if (!have.has("ip_allowlist")) {
+    db.exec("ALTER TABLE personal_access_tokens ADD COLUMN ip_allowlist TEXT NOT NULL DEFAULT '[]'");
+  }
+}
+
 function db(): Database {
   if (_db) return _db;
   mkdirSync(dirname(DB_PATH), { recursive: true });
@@ -49,6 +62,7 @@ function db(): Database {
   // DBs doesn't help legacy DBs, and any index that references a new column
   // would fail if schema.sql ran first.
   migrateUsersTable(_db);
+  migratePatTable(_db);
   _db.exec(readFileSync(join(import.meta.dir, "schema.sql"), "utf8"));
   return _db;
 }
