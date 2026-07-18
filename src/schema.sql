@@ -127,3 +127,25 @@ CREATE INDEX IF NOT EXISTS deliveries_webhook
   ON webhook_deliveries (webhook_id);
 CREATE INDEX IF NOT EXISTS deliveries_created
   ON webhook_deliveries (created_at DESC);
+
+-- Personal Access Tokens (Gitea-aligned). Hashed with per-token salt so the
+-- DB leak doesn't reveal tokens; last_eight enables indexed lookup without
+-- storing the plaintext. `scopes` is stored but not yet enforced — every PAT
+-- inherits the user's full perms in v1; granularity lands with project_members.
+CREATE TABLE IF NOT EXISTS personal_access_tokens (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_login       TEXT NOT NULL REFERENCES users(login) ON DELETE CASCADE,
+  name             TEXT NOT NULL,
+  salt             TEXT NOT NULL,
+  token_hash       TEXT NOT NULL,
+  token_last_eight TEXT NOT NULL,
+  scopes           TEXT NOT NULL DEFAULT '[]',
+  expires_at       TEXT,
+  last_used_at     TEXT,
+  created_at       TEXT NOT NULL,
+  revoked_at       TEXT
+);
+CREATE INDEX IF NOT EXISTS pat_user
+  ON personal_access_tokens (user_login);
+CREATE INDEX IF NOT EXISTS pat_last_eight
+  ON personal_access_tokens (token_last_eight);

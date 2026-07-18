@@ -3,6 +3,7 @@
 // run in transactions; per-project issue numbers are allocated atomically.
 
 import { rawDB } from "./db";
+import { createHash } from "node:crypto";
 
 export type UserKind = "human" | "bot" | "system";
 
@@ -535,4 +536,126 @@ export async function setUserPassword(login: string, newPassword: string): Promi
 export function countAdmins(): number {
   const row = rawDB().query("SELECT COUNT(*) AS n FROM users WHERE is_admin = 1").get() as { n: number };
   return row.n;
+}
+
+export interface PatRow {
+  id: number;
+  user_login: string;
+  name: string;
+  salt: string;
+  token_hash: string;
+  token_last_eight: string;
+  scopes: string;
+  expires_at: string | null;
+  last_used_at: string | null;
+  created_at: string;
+  revoked_at: string | null;
+}
+
+export interface CreatePatInput {
+  user_login: string;
+  name: string;
+  scopes?: string[];
+  expires_at?: string | null;
+}
+
+export interface CreatePatResult {
+  row: PatRow;
+  plaintext: string;
+}
+
+const PAT_NAME_RE = /^[\w\u4e00-\u9fa5 .\-()]{1,64}$/;
+
+function randomHex(bytes: number): string {
+  return Buffer.from(crypto.getRandomValues(new Uint8Array(bytes))).toString("hex");
+}
+
+function sha256Hex(msg: string): string {
+  const h = createHash("sha256");
+  h.update(msg);
+  return h.digest("hex");
+}
+
+function ctEqualBuf(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= (a[i] ?? 0) ^ (b[i] ?? 0);
+  return diff === 0;
+}
+
+export async function createPat(input: CreatePatInput): Promise<CreatePatResult> {
+  const login = input.user_login.trim();
+  const name = input.name.trim();
+  const user = getUserByLogin(login);
+  if (!user) throw new StoreError(404, `用户 ${login} 不存在`);
+  if (!PAT_NAME_RE.test(name)) throw new StoreError(400, "token 名称含非法字符或长度不在 1-64 内");
+  const scopes = input.scopes ?? ["read", "write"];
+  for (const s of scopes) {
+    if (!/^[a-z:_]{1,32}$/.test(s)) throw new StoreError(400, `scope 含非法字符: ${s}`);
+  }
+  let expiresAt: string | null = null;
+  if (input.expires_at) {
+    const t = Date.parse(input.expires_at);
+    if (!Number.isFinite(t)) throw new StoreError(400, "expires_at 不是合法时间");
+    expiresAt = new Date(t).toISOString();
+  }
+  // 40-char hex token (matches Gitea format) + 20-char hex per-token salt.
+  const plaintext = randomHex(20);
+  const salt = randomHex(10);
+  const tokenHash = sha256Hex(salt + plaintext);
+  const lastEight = plaintext.slice(-8);
+  const ts = now();
+  const db = rawDB();
+  const info = db
+    .query(
+      `INSERT INTO personal_access_tokens
+         (user_login, name, salt, token_hash, token_last_eight, scopes, expires_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(login, name, salt, tokenHash, lastEight, JSON.stringify(scopes), expiresAt, ts);
+  const row = getPat(Number(info.lastInsertRowid));
+  if (!row) throw new StoreError(500, "PAT 创建后无法读取");
+  return { row, plaintext };
+}
+
+export function getPat(id: number): PatRow | null {
+  return (rawDB().query("SELECT * FROM personal_access_tokens WHERE id = ?").get(id) as PatRow | null) ?? null;
+}
+
+export function listPatsForUser(login: string): PatRow[] {
+  return rawDB()
+    .query("SELECT * FROM personal_access_tokens WHERE user_login = ? ORDER BY created_at DESC")
+    .all(login) as PatRow[];
+}
+
+export function revokePat(id: number, login: string): void {
+  const row = getPat(id);
+  if (!row) throw new StoreError(404, "token 不存在");
+  if (row.user_login !== login) throw new StoreError(403, "无权操作他人 token");
+  if (row.revoked_at) return;
+  rawDB()
+    .query("UPDATE personal_access_tokens SET revoked_at = ? WHERE id = ?")
+    .run(now(), id);
+}
+
+export async function verifyPat(rawToken: string): Promise<UserRow | null> {
+  if (!/^[0-9a-f]{40}$/.test(rawToken)) return null;
+  const lastEight = rawToken.slice(-8);
+  const candidates = rawDB()
+    .query("SELECT * FROM personal_access_tokens WHERE token_last_eight = ?")
+    .all(lastEight) as PatRow[];
+  const nowMs = Date.now();
+  for (const row of candidates) {
+    if (row.revoked_at) continue;
+    if (row.expires_at && Date.parse(row.expires_at) < nowMs) continue;
+    const expected = sha256Hex(row.salt + rawToken);
+    if (!ctEqualBuf(Buffer.from(expected, "hex"), Buffer.from(row.token_hash, "hex"))) continue;
+    const user = getUserByLogin(row.user_login);
+    if (!user || !user.is_active) return null;
+    rawDB()
+      .query("UPDATE personal_access_tokens SET last_used_at = ? WHERE id = ?")
+      .run(now(), row.id);
+    return user;
+  }
+  return null;
 }
