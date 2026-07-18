@@ -13,6 +13,7 @@ import { buildHome, handleCreateProject } from "./views/home";
 import { buildIssuesFeed } from "./views/issues";
 import { buildIssueNew } from "./views/issueNew";
 import { buildSettingsPage } from "./views/settings";
+import { buildMePage, buildAdminUsersPage } from "./views/users";
 import { buildSessionList, buildSessionView, renderNewMessages, renderBatchHTML } from "./views/sessionLog";
 import { buildFileView, FileViewError, readFileSince, serveRawFile } from "./fileview";
 import { translateText, translateTextStream, TranslateError } from "./translate";
@@ -31,6 +32,10 @@ import {
   verifyUserPassword,
   updateUser,
   countAdmins,
+  createUser,
+  getUserByLogin,
+  setUserPassword,
+  listUsers,
   type UserRow,
 } from "./store";
 import {
@@ -514,6 +519,109 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       const rh = new Headers(SEC_HEADERS);
       rh.set("location", "/settings?saved=1");
       return new Response(null, { status: 303, headers: rh });
+    }
+  }
+
+  if (url.pathname === "/me") {
+    const me = ctx.user!;
+    const flashKind = url.searchParams.get("ok") === "1" ? "ok" : url.searchParams.get("err") ? "err" : null;
+    const flashMsg = url.searchParams.get("ok") === "1" ? url.searchParams.get("ok_msg")! : url.searchParams.get("err");
+    const flash = flashKind ? { kind: flashKind as "ok" | "err", msg: flashMsg ?? "" } : null;
+    return html(buildMePage(me, flash));
+  }
+
+  if (url.pathname === "/me/password" && req.method === "POST") {
+    const me = ctx.user!;
+    if (!rateLimit(`pw:${ip}`, 10, 10 / 60)) {
+      return Response.redirect(`${url.origin}/me?err=${encodeURIComponent("太快了，稍后再试")}`, 303);
+    }
+    const form = await req.formData().catch(() => new FormData());
+    const oldPw = String(form.get("old") ?? "");
+    const newPw = String(form.get("new") ?? "");
+    const confirm = String(form.get("confirm") ?? "");
+    if (me.password_hash) {
+      const ok = await verifyUserPassword(me.login, oldPw);
+      if (!ok) return Response.redirect(`${url.origin}/me?err=${encodeURIComponent("当前密码错误")}`, 303);
+    }
+    if (newPw !== confirm) {
+      return Response.redirect(`${url.origin}/me?err=${encodeURIComponent("两次新密码不一致")}`, 303);
+    }
+    try {
+      await setUserPassword(me.login, newPw);
+    } catch (e) {
+      return Response.redirect(`${url.origin}/me?err=${encodeURIComponent(errMsg(e))}`, 303);
+    }
+    return Response.redirect(`${url.origin}/me?ok=1&ok_msg=${encodeURIComponent("密码已更新")}`, 303);
+  }
+
+  if (url.pathname.startsWith("/admin/") && ctx.user!.is_admin !== 1) {
+    return html(errorPage("无权限", "需要管理员账户"), 403);
+  }
+  if (url.pathname === "/admin/users") {
+    if (req.method === "GET") {
+      const flashKind = url.searchParams.get("ok") === "1" ? "ok" : url.searchParams.get("err") ? "err" : null;
+      const flashMsg = url.searchParams.get("ok") === "1" ? url.searchParams.get("ok_msg")! : url.searchParams.get("err");
+      const flash = flashKind ? { kind: flashKind as "ok" | "err", msg: flashMsg ?? "" } : null;
+      return html(buildAdminUsersPage(ctx.user!, listUsers(), flash));
+    }
+  }
+
+  if (url.pathname === "/admin/users/create" && req.method === "POST") {
+    if (!rateLimit(`admin:${ip}`, 20, 20 / 60)) {
+      return Response.redirect(`${url.origin}/admin/users?err=${encodeURIComponent("太快了")}`, 303);
+    }
+    const form = await req.formData().catch(() => new FormData());
+    const login = String(form.get("login") ?? "").trim();
+    const password = String(form.get("password") ?? "");
+    const email = String(form.get("email") ?? "").trim() || undefined;
+    const kind = (String(form.get("kind") ?? "human") as "human" | "bot" | "system") || "human";
+    const isAdmin = form.get("is_admin") === "1";
+    try {
+      const u = await createUser({ login, password, email, kind, is_admin: isAdmin });
+      return Response.redirect(`${url.origin}/admin/users?ok=1&ok_msg=${encodeURIComponent(`已创建用户 ${u.login}`)}`, 303);
+    } catch (e) {
+      return Response.redirect(`${url.origin}/admin/users?err=${encodeURIComponent(errMsg(e))}`, 303);
+    }
+  }
+
+  const userActionRe = url.pathname.match(/^\/admin\/users\/([^/]+)\/(reset-password|toggle-admin|toggle-active)$/);
+  if (userActionRe && req.method === "POST") {
+    const [, targetLogin, action] = userActionRe;
+    if (!(targetLogin && action)) return html(errorPage("bad path", ""), 400);
+    try {
+      if (action === "reset-password") {
+        const form = await req.formData().catch(() => new FormData());
+        const pw = String(form.get("password") ?? "");
+        await setUserPassword(targetLogin, pw);
+        return Response.redirect(`${url.origin}/admin/users?ok=1&ok_msg=${encodeURIComponent(`${targetLogin} 密码已重置`)}`, 303);
+      }
+      if (action === "toggle-admin") {
+        if (targetLogin === ctx.user!.login) {
+          return Response.redirect(`${url.origin}/admin/users?err=${encodeURIComponent("不能改自己的 admin 状态")}`, 303);
+        }
+        const u = getUserByLogin(targetLogin);
+        if (!u) throw new StoreError(404, "用户不存在");
+        if (u.is_admin === 1 && countAdmins() <= 1) {
+          return Response.redirect(`${url.origin}/admin/users?err=${encodeURIComponent("系统至少要保留一个 admin")}`, 303);
+        }
+        const updated = updateUser(targetLogin, { is_admin: u.is_admin !== 1 });
+        return Response.redirect(`${url.origin}/admin/users?ok=1&ok_msg=${encodeURIComponent(`${updated.login} ${updated.is_admin ? "已设为 admin" : "已取消 admin"}`)}`, 303);
+      }
+      if (action === "toggle-active") {
+        if (targetLogin === ctx.user!.login) {
+          return Response.redirect(`${url.origin}/admin/users?err=${encodeURIComponent("不能禁用自己的账户")}`, 303);
+        }
+        const u = getUserByLogin(targetLogin);
+        if (!u) throw new StoreError(404, "用户不存在");
+        if (u.is_active === 1 && u.is_admin === 1 && countAdmins() <= 1) {
+          return Response.redirect(`${url.origin}/admin/users?err=${encodeURIComponent("不能禁用最后一个 admin")}`, 303);
+        }
+        const updated = updateUser(targetLogin, { is_active: u.is_active !== 1 });
+        return Response.redirect(`${url.origin}/admin/users?ok=1&ok_msg=${encodeURIComponent(`${updated.login} ${updated.is_active ? "已启用" : "已禁用"}`)}`, 303);
+      }
+      return html(errorPage("bad action", ""), 400);
+    } catch (e) {
+      return Response.redirect(`${url.origin}/admin/users?err=${encodeURIComponent(errMsg(e))}`, 303);
     }
   }
 
