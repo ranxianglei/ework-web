@@ -84,7 +84,8 @@ export function buildIssueThread(
   cfg: Config,
   owner: string,
   repo: string,
-  number: number
+  number: number,
+  viewerLogin?: string
 ): { html: string } {
   const project = getProject(owner, repo);
   if (!project) throw new StoreError(404, `项目 ${owner}/${repo} 不存在`);
@@ -114,7 +115,7 @@ export function buildIssueThread(
       descriptionHtml,
       descriptionCollapsed,
       writesEnabled: cfg.writesEnabled,
-      operatorLogin: cfg.operatorLogin,
+      operatorLogin: viewerLogin ?? cfg.operatorLogin,
     },
     safeJsonEmbed(payload),
     displayViews.map(renderCommentCard).join("")

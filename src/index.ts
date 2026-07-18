@@ -578,7 +578,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
           content_type: contentType,
           size: bytes.length,
           blob_path: blobPath,
-          uploaded_by: cfg.operatorLogin,
+          uploaded_by: ctx.user!.login,
         });
         const isImg = isImageContentType(contentType);
         const markdown = isImg
@@ -608,7 +608,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         if (!issue) return json({ error: "issue not found" }, 404);
         let view: CommentView | null = null;
         if (hasBody) {
-          const c = postComment(issue.id, body, cfg.operatorLogin);
+          const c = postComment(issue.id, body, ctx.user!.login);
           view = {
             id: c.id,
             tag: classifyActor(c.body),
@@ -649,7 +649,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         if (!title) return html(errorPage("标题不能为空", "回到上一页填写标题后重试"), 400);
         let project = getProject(owner, repo);
         if (!project) project = createProjectSafe(owner, repo);
-        const issue = createIssue(project.id, title, body, cfg.operatorLogin);
+        const issue = createIssue(project.id, title, body, ctx.user!.login);
         void emitIssueEvent(project.id, issue.id, "opened", url.origin);
         return Response.redirect(
           `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${issue.number}`,
@@ -756,7 +756,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     if (!(owner && repo && numStr)) return html(errorPage("404", "bad path"), 404);
     const number = Number(numStr);
     try {
-      const { html: body } = buildIssueThread(cfg, owner, repo, number);
+      const { html: body } = buildIssueThread(cfg, owner, repo, number, ctx.user?.login);
       return html(body);
     } catch (e) {
       const status = e instanceof StoreError ? e.status : 500;
