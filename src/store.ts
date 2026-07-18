@@ -4,11 +4,28 @@
 
 import { rawDB } from "./db";
 
+export type UserKind = "human" | "bot" | "system";
+
 export interface UserRow {
   login: string;
-  kind: "human" | "bot" | "system";
+  kind: UserKind;
   display_name: string | null;
+  password_hash: string | null;
+  email: string | null;
+  is_admin: number;
+  is_active: number;
   created_at: string;
+  updated_at: string;
+}
+
+export interface CreateUserInput {
+  login: string;
+  password: string;
+  kind?: UserKind;
+  email?: string;
+  display_name?: string;
+  is_admin?: boolean;
+  is_active?: boolean;
 }
 
 export interface ProjectRow {
@@ -96,13 +113,25 @@ function tx<T>(db: DB, fn: () => T): T {
   }
 }
 
-export function ensureUser(login: string, kind: "human" | "bot" | "system" = "human"): UserRow {
+export function ensureUser(login: string, kind: UserKind = "human"): UserRow {
   const db = rawDB();
   const existing = db.query("SELECT * FROM users WHERE login = ?").get(login) as UserRow | null;
   if (existing) return existing;
   const ts = now();
-  db.query("INSERT INTO users (login, kind, created_at) VALUES (?, ?, ?)").run(login, kind, ts);
-  return { login, kind, display_name: null, created_at: ts };
+  db.query(
+    "INSERT INTO users (login, kind, created_at, updated_at) VALUES (?, ?, ?, ?)"
+  ).run(login, kind, ts, ts);
+  return {
+    login,
+    kind,
+    display_name: null,
+    password_hash: null,
+    email: null,
+    is_admin: 0,
+    is_active: 1,
+    created_at: ts,
+    updated_at: ts,
+  };
 }
 
 export function getProject(owner: string, name: string): ProjectRow | null {
@@ -392,4 +421,118 @@ export function createAttachment(a: Omit<AttachmentRow, "created_at">): Attachme
 
 export function getAttachment(uuid: string): AttachmentRow | null {
   return (rawDB().query("SELECT * FROM attachments WHERE uuid = ?").get(uuid) as AttachmentRow | null) ?? null;
+}
+
+const LOGIN_RE = /^[A-Za-z0-9_.-]{1,64}$/;
+
+async function hashPassword(plain: string): Promise<string> {
+  // Algorithm is encoded in the modular crypt string ($2b$10$...), so future
+  // migration to argon2 only affects newly-set passwords; legacy verifies work.
+  return Bun.password.hash(plain, { algorithm: "bcrypt", cost: 10 });
+}
+
+export async function createUser(input: CreateUserInput): Promise<UserRow> {
+  const login = input.login.trim();
+  if (!LOGIN_RE.test(login)) {
+    throw new StoreError(400, "login 含非法字符或长度不在 1-64 内");
+  }
+  if (input.password.length < 8) {
+    throw new StoreError(400, "密码至少 8 位");
+  }
+  if (input.password.length > 200) {
+    throw new StoreError(400, "密码过长（≤200）");
+  }
+  const db = rawDB();
+  if (db.query("SELECT 1 FROM users WHERE login = ?").get(login)) {
+    throw new StoreError(409, `用户 ${login} 已存在`);
+  }
+  const ts = now();
+  const hash = await hashPassword(input.password);
+  db.query(
+    `INSERT INTO users (login, kind, display_name, password_hash, email, is_admin, is_active, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    login,
+    input.kind ?? "human",
+    input.display_name ?? null,
+    hash,
+    input.email ?? null,
+    input.is_admin ? 1 : 0,
+    input.is_active === false ? 0 : 1,
+    ts,
+    ts
+  );
+  return getUserByLogin(login)!;
+}
+
+export function getUserByLogin(login: string): UserRow | null {
+  return (rawDB().query("SELECT * FROM users WHERE login = ?").get(login) as UserRow | null) ?? null;
+}
+
+export function listUsers(): UserRow[] {
+  return rawDB()
+    .query("SELECT * FROM users ORDER BY is_admin DESC, created_at ASC")
+    .all() as UserRow[];
+}
+
+export function listAdmins(): UserRow[] {
+  return rawDB().query("SELECT * FROM users WHERE is_admin = 1").all() as UserRow[];
+}
+
+export async function verifyUserPassword(login: string, password: string): Promise<UserRow | null> {
+  const user = getUserByLogin(login);
+  if (!user || !user.password_hash || !user.is_active) return null;
+  const ok = await Bun.password.verify(password, user.password_hash);
+  return ok ? user : null;
+}
+
+export interface UpdateUserPatch {
+  email?: string | null;
+  display_name?: string | null;
+  is_admin?: boolean;
+  is_active?: boolean;
+  kind?: UserKind;
+}
+
+export function updateUser(login: string, patch: UpdateUserPatch): UserRow {
+  const existing = getUserByLogin(login);
+  if (!existing) throw new StoreError(404, `用户 ${login} 不存在`);
+  const ts = now();
+  const db = rawDB();
+  db.query(
+    `UPDATE users SET
+       email = COALESCE(?, email),
+       display_name = COALESCE(?, display_name),
+       is_admin = COALESCE(?, is_admin),
+       is_active = COALESCE(?, is_active),
+       kind = COALESCE(?, kind),
+       updated_at = ?
+     WHERE login = ?`
+  ).run(
+    patch.email !== undefined ? patch.email : null,
+    patch.display_name !== undefined ? patch.display_name : null,
+    patch.is_admin !== undefined ? (patch.is_admin ? 1 : 0) : null,
+    patch.is_active !== undefined ? (patch.is_active ? 1 : 0) : null,
+    patch.kind ?? null,
+    ts,
+    login
+  );
+  return getUserByLogin(login)!;
+}
+
+export async function setUserPassword(login: string, newPassword: string): Promise<void> {
+  if (newPassword.length < 8) throw new StoreError(400, "密码至少 8 位");
+  if (newPassword.length > 200) throw new StoreError(400, "密码过长（≤200）");
+  const existing = getUserByLogin(login);
+  if (!existing) throw new StoreError(404, `用户 ${login} 不存在`);
+  const ts = now();
+  const hash = await hashPassword(newPassword);
+  rawDB()
+    .query("UPDATE users SET password_hash = ?, updated_at = ? WHERE login = ?")
+    .run(hash, ts, login);
+}
+
+export function countAdmins(): number {
+  const row = rawDB().query("SELECT COUNT(*) AS n FROM users WHERE is_admin = 1").get() as { n: number };
+  return row.n;
 }

@@ -1,12 +1,19 @@
 -- ework schema. Applied idempotently on boot (IF NOT EXISTS everywhere).
 -- See db.ts for PRAGMA setup (WAL + foreign_keys = ON).
 
+-- login stays PRIMARY KEY intentionally. Renaming users is not supported;
+-- swap to INTEGER user_id + UNIQUE(login) if that ever changes.
 CREATE TABLE IF NOT EXISTS users (
-  login        TEXT PRIMARY KEY,
-  kind         TEXT NOT NULL DEFAULT 'human'
-               CHECK (kind IN ('human','bot','system')),
-  display_name TEXT,
-  created_at   TEXT NOT NULL
+  login         TEXT PRIMARY KEY,
+  kind          TEXT NOT NULL DEFAULT 'human'
+                CHECK (kind IN ('human','bot','system')),
+  display_name  TEXT,
+  password_hash TEXT,
+  email         TEXT,
+  is_admin      INTEGER NOT NULL DEFAULT 0,
+  is_active     INTEGER NOT NULL DEFAULT 1,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS projects (

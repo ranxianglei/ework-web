@@ -12,6 +12,29 @@ const DB_PATH =
 
 let _db: Database | null = null;
 
+function userTableColumns(db: Database): Set<string> {
+  const rows = db.query("PRAGMA table_info(users)").all() as { name: string }[];
+  return new Set(rows.map((r) => r.name));
+}
+
+// schema.sql CREATE TABLE only applies full column list to fresh DBs;
+// existing DBs need these ALTERs to gain new columns. Idempotent via PRAGMA check.
+function migrateUsersTable(db: Database): void {
+  const have = userTableColumns(db);
+  const additions: { col: string; ddl: string }[] = [
+    { col: "password_hash", ddl: "ALTER TABLE users ADD COLUMN password_hash TEXT" },
+    { col: "email", ddl: "ALTER TABLE users ADD COLUMN email TEXT" },
+    { col: "is_admin", ddl: "ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0" },
+    { col: "is_active", ddl: "ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1" },
+    { col: "updated_at", ddl: "ALTER TABLE users ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''" },
+  ];
+  for (const m of additions) {
+    if (have.has(m.col)) continue;
+    db.exec(m.ddl);
+  }
+  db.exec("CREATE INDEX IF NOT EXISTS users_is_admin ON users (is_admin) WHERE is_admin = 1");
+}
+
 function db(): Database {
   if (_db) return _db;
   mkdirSync(dirname(DB_PATH), { recursive: true });
@@ -21,6 +44,10 @@ function db(): Database {
   _db.exec(
     "CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)"
   );
+  // Migration must run BEFORE schema.sql: schema.sql's CREATE TABLE for fresh
+  // DBs doesn't help legacy DBs, and any index that references a new column
+  // would fail if schema.sql ran first.
+  migrateUsersTable(_db);
   _db.exec(readFileSync(join(import.meta.dir, "schema.sql"), "utf8"));
   return _db;
 }
