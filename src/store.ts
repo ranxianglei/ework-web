@@ -63,6 +63,7 @@ export interface CommentRow {
   body: string;
   created_at: string;
   updated_at: string;
+  author_kind?: UserKind;
 }
 
 export interface LabelRow {
@@ -314,14 +315,27 @@ export function listCommentsPage(issueId: number, page: number, pageSize: number
   const clamped = Math.min(Math.max(1, page), totalPages);
   const offset = (clamped - 1) * pageSize;
   const rows = rawDB()
-    .query("SELECT * FROM comments WHERE issue_id = ? ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?")
+    .query(
+      `SELECT c.*, u.kind AS author_kind
+       FROM comments c
+       LEFT JOIN users u ON u.login = c.author
+       WHERE c.issue_id = ?
+       ORDER BY c.created_at ASC, c.id ASC
+       LIMIT ? OFFSET ?`
+    )
     .all(issueId, pageSize, offset) as CommentRow[];
   return { rows, page: clamped };
 }
 
 export function listCommentsSince(issueId: number, sinceISO: string): CommentRow[] {
   return rawDB()
-    .query("SELECT * FROM comments WHERE issue_id = ? AND created_at > ? ORDER BY created_at ASC, id ASC")
+    .query(
+      `SELECT c.*, u.kind AS author_kind
+       FROM comments c
+       LEFT JOIN users u ON u.login = c.author
+       WHERE c.issue_id = ? AND c.created_at > ?
+       ORDER BY c.created_at ASC, c.id ASC`
+    )
     .all(issueId, sinceISO) as CommentRow[];
 }
 
@@ -338,7 +352,11 @@ export function postComment(issueId: number, body: string, author: string): Comm
     db.query("UPDATE issues SET updated_at = ? WHERE id = ?").run(ts, issueId);
     const row = db.query("SELECT project_id FROM issues WHERE id = ?").get(issueId) as { project_id: number };
     db.query("UPDATE projects SET updated_at = ? WHERE id = ?").run(ts, row.project_id);
-    return db.query("SELECT * FROM comments WHERE id = ?").get(Number(info.lastInsertRowid)) as CommentRow;
+    return db.query(
+      `SELECT c.*, u.kind AS author_kind
+       FROM comments c LEFT JOIN users u ON u.login = c.author
+       WHERE c.id = ?`
+    ).get(Number(info.lastInsertRowid)) as CommentRow;
   });
 }
 

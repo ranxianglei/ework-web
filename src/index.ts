@@ -759,7 +759,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
           const c = postComment(issue.id, body, ctx.user!.login);
           view = {
             id: c.id,
-            tag: classifyActor(c.body),
+            tag: classifyActor(c.body, c.author_kind),
             login: c.author,
             avatar: "",
             created_at: c.created_at,
