@@ -40,6 +40,9 @@ import {
   createPat,
   listPatsForUser,
   revokePat,
+  canWriteProject,
+  canAdminProject,
+  ensureProjectBootstrapAdmin,
   type UserRow,
 } from "./store";
 import {
@@ -319,6 +322,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       const f: Record<string, string | undefined> = {};
       for (const [k, v] of form.entries()) f[k] = typeof v === "string" ? v : undefined;
       const r = handleCreateProject(f);
+      if (r.projectId) ensureProjectBootstrapAdmin(r.projectId, ctx.user!.login);
       return Response.redirect(`${url.origin}${r.location}`, 303);
     }
     return html(buildHome());
@@ -708,6 +712,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       try {
         const project = getProject(owner, repo);
         if (!project) return json({ error: "project not found" }, 404);
+        if (!canWriteProject(project.id, ctx.user)) return json({ error: "forbidden: needs writer role on project" }, 403);
         const issue = getIssueWithMeta(project.id, number);
         if (!issue) return json({ error: "issue not found" }, 404);
         const form = await req.formData().catch(() => null);
@@ -752,6 +757,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         if (body.length > 65536) return json({ error: "body too long" }, 413);
         const project = getProject(owner, repo);
         if (!project) return json({ error: "project not found" }, 404);
+        if (!canWriteProject(project.id, ctx.user)) return json({ error: "forbidden: needs writer role on project" }, 403);
         const issue = getIssueWithMeta(project.id, number);
         if (!issue) return json({ error: "issue not found" }, 404);
         let view: CommentView | null = null;
@@ -796,7 +802,15 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         const body = String(form.get("body") ?? "");
         if (!title) return html(errorPage("标题不能为空", "回到上一页填写标题后重试"), 400);
         let project = getProject(owner, repo);
-        if (!project) project = createProjectSafe(owner, repo);
+        let createdProject = false;
+        if (!project) {
+          project = createProjectSafe(owner, repo);
+          createdProject = true;
+        }
+        if (!canWriteProject(project.id, ctx.user)) {
+          return html(errorPage("无权限", "需要该项目 writer 及以上角色才能创建 issue"), 403);
+        }
+        if (createdProject) ensureProjectBootstrapAdmin(project.id, ctx.user!.login);
         const issue = createIssue(project.id, title, body, ctx.user!.login);
         void emitIssueEvent(project.id, issue.id, "opened", url.origin);
         return Response.redirect(
@@ -815,6 +829,9 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       try {
         const project = getProject(owner, repo);
         if (!project) return html(errorPage("项目不存在", ""), 404);
+        if (!canAdminProject(project.id, ctx.user)) {
+          return html(errorPage("无权限", "需要该项目 admin 角色才能管理 webhook"), 403);
+        }
         const form = await req.formData().catch(() => new FormData());
         const url_ = String(form.get("url") ?? "").trim();
         const secret = String(form.get("secret") ?? "");
@@ -845,6 +862,9 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       if (!wh) return html(errorPage("webhook 不存在", ""), 404);
       const project = getProjectById(wh.project_id);
       if (!project) return html(errorPage("项目不存在", ""), 404);
+      if (!canAdminProject(project.id, ctx.user)) {
+        return html(errorPage("无权限", "需要该项目 admin 角色才能管理 webhook"), 403);
+      }
       const back = `${url.origin}/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}/settings/webhooks`;
       if (action === "delete") {
         deleteWebhook(id);

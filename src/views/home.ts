@@ -58,14 +58,16 @@ ${tabNavHTML("projects")}
 </body></html>`;
 }
 
-export function handleCreateProject(form: Record<string, string | undefined>): { location: string; error?: string } {
+export function handleCreateProject(
+  form: Record<string, string | undefined>
+): { location: string; error?: string; projectId?: number } {
   const owner = (form.owner ?? "").trim();
   const name = (form.name ?? "").trim();
   const description = (form.description ?? "").trim();
   if (!owner || !name) return { location: "/projects", error: "owner 和 name 必填" };
   try {
     const p = createProject(owner, name, description);
-    return { location: `/${encodeURIComponent(p.owner)}/${encodeURIComponent(p.name)}/issues` };
+    return { location: `/${encodeURIComponent(p.owner)}/${encodeURIComponent(p.name)}/issues`, projectId: p.id };
   } catch (e) {
     return {
       location: "/projects",
