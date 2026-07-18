@@ -1,5 +1,5 @@
 import type { Config } from "./config";
-import { getUserByLogin, ensureUser, type UserRow } from "./store";
+import { getUserByLogin, ensureUser, verifyPat, type UserRow } from "./store";
 
 // Per-user token-cookie auth. Cookie value is HMAC-signed and carries login +
 // issued-at, so the server is stateless (no session table). Two cookie formats
@@ -86,33 +86,47 @@ function parseV2Cookie(value: string): { login: string; issued: string; sig: str
 export async function checkAuth(req: Request, cfg: Config): Promise<AuthResult> {
   const cookies = parseCookies(req.headers.get("cookie"));
   const cookieVal = cookies[authCookieName(cfg)];
-  if (!cookieVal) return { ok: false, user: null };
 
-  if (cookieVal.startsWith(`${COOKIE_VERSION}.`)) {
-    const parsed = parseV2Cookie(cookieVal);
-    if (!parsed) return { ok: false, user: null };
-    const payload = `${COOKIE_VERSION}.${parsed.login}.${parsed.issued}`;
-    const expected = await hmac(cfg.cookieSecret, payload);
-    if (!ctEqual(parsed.sig, expected)) return { ok: false, user: null };
-    const user = getUserByLogin(parsed.login);
+  if (cookieVal) {
+    if (cookieVal.startsWith(`${COOKIE_VERSION}.`)) {
+      const parsed = parseV2Cookie(cookieVal);
+      if (!parsed) return { ok: false, user: null };
+      const payload = `${COOKIE_VERSION}.${parsed.login}.${parsed.issued}`;
+      const expected = await hmac(cfg.cookieSecret, payload);
+      if (!ctEqual(parsed.sig, expected)) return { ok: false, user: null };
+      const user = getUserByLogin(parsed.login);
+      if (!user || !user.is_active) return { ok: false, user: null };
+      return { ok: true, user };
+    }
+
+    // Legacy format: "<token>.<sig>". Accept only if token == cfg.authToken,
+    // then resolve to the configured operator user (auto-created on boot by
+    // ensureBootstrapAdmin in index.ts).
+    const dot = cookieVal.lastIndexOf(".");
+    if (dot <= 0) return { ok: false, user: null };
+    const token = cookieVal.slice(0, dot);
+    const sig = cookieVal.slice(dot + 1);
+    const expected = await hmac(cfg.cookieSecret, token);
+    if (!ctEqual(sig, expected) || !ctEqual(token, cfg.authToken)) {
+      return { ok: false, user: null };
+    }
+    const user = getUserByLogin(cfg.operatorLogin);
     if (!user || !user.is_active) return { ok: false, user: null };
     return { ok: true, user };
   }
 
-  // Legacy format: "<token>.<sig>". Accept only if token == cfg.authToken,
-  // then resolve to the configured operator user (auto-created on boot by
-  // ensureBootstrapAdmin in index.ts).
-  const dot = cookieVal.lastIndexOf(".");
-  if (dot <= 0) return { ok: false, user: null };
-  const token = cookieVal.slice(0, dot);
-  const sig = cookieVal.slice(dot + 1);
-  const expected = await hmac(cfg.cookieSecret, token);
-  if (!ctEqual(sig, expected) || !ctEqual(token, cfg.authToken)) {
-    return { ok: false, user: null };
+  // PAT bearer (API clients / agents). Same auth surface as cookies, so any
+  // route that takes a logged-in cookie also takes a Bearer PAT.
+  const authHeader = req.headers.get("authorization");
+  if (authHeader?.toLowerCase().startsWith("bearer ")) {
+    const token = authHeader.slice(7).trim();
+    if (token) {
+      const user = await verifyPat(token);
+      if (user) return { ok: true, user };
+    }
   }
-  const user = getUserByLogin(cfg.operatorLogin);
-  if (!user || !user.is_active) return { ok: false, user: null };
-  return { ok: true, user };
+
+  return { ok: false, user: null };
 }
 
 export function ensureBootstrapAdmin(login: string): UserRow {
