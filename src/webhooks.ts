@@ -175,7 +175,7 @@ interface PayloadLabel {
 
 interface PayloadRepository {
   id: number;
-  owner: string;
+  owner: PayloadUser;
   name: string;
   full_name: string;
   description: string;
@@ -269,7 +269,7 @@ function buildRepository(project: ProjectRow, origin: string): PayloadRepository
   const htmlUrl = `${origin}/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}`;
   return {
     id: project.id,
-    owner: project.owner,
+    owner: buildUser(project.owner, origin),
     name: project.name,
     full_name: fullName,
     description: project.description ?? "",
