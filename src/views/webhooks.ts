@@ -84,7 +84,7 @@ export function buildWebhooksPage(input: WebhooksPageInput): string {
       .map((wh) => webhookCardHtml(wh, deliveriesByWebhook.get(wh.id) ?? []))
       .join("") || `<p class="empty-page">这个项目还没有 webhook。<br>用下面的表单添加一个。</p>`;
 
-  const formAction = `/__wh?project_id=${project.id}`;
+  const formAction = `/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}/settings/webhooks`;
   const html = `<!doctype html>
 <html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">

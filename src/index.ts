@@ -631,26 +631,27 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       }
     }
 
-    if (url.pathname === "/__wh") {
-      const form = await req.formData().catch(() => new FormData());
-      const projectId = Number(form.get("project_id") ?? "0");
-      const url_ = String(form.get("url") ?? "").trim();
-      const secret = String(form.get("secret") ?? "");
-      const events = form.getAll("events") as string[];
-      if (!projectId) return html(errorPage("缺少 project_id", "返回重试"), 400);
+    const whCreate = url.pathname.match(REPO_WEBHOOKS_RE);
+    if (whCreate) {
+      const [, owner, repo] = whCreate;
+      if (!(owner && repo)) return html(errorPage("bad path", ""), 400);
       try {
-        const project = getProjectById(projectId);
+        const project = getProject(owner, repo);
         if (!project) return html(errorPage("项目不存在", ""), 404);
+        const form = await req.formData().catch(() => new FormData());
+        const url_ = String(form.get("url") ?? "").trim();
+        const secret = String(form.get("secret") ?? "");
+        const events = form.getAll("events") as string[];
         const validEvents = (events.length > 0 ? events : ["issues", "issue_comment"])
           .filter((e): e is WebhookEventName => e === "issues" || e === "issue_comment");
         const wh = createWebhook({
-          project_id: projectId,
+          project_id: project.id,
           url: url_,
           secret,
           events: validEvents,
         });
         return Response.redirect(
-          `${url.origin}/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}/settings/webhooks#wh-${wh.id}`,
+          `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/settings/webhooks#wh-${wh.id}`,
           303
         );
       } catch (e) {
