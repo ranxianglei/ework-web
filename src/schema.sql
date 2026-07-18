@@ -83,3 +83,40 @@ CREATE TABLE IF NOT EXISTS attachments (
 );
 CREATE INDEX IF NOT EXISTS attachments_issue
   ON attachments (issue_id);
+
+-- Webhooks (Gitea-compatible). Scoped per-project so different repos can fan out
+-- to different downstream consumers. `events` is a JSON array of event types
+-- ('issues', 'issue_comment', 'push', ...). ework v1 emits only the first two.
+CREATE TABLE IF NOT EXISTS webhooks (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  url         TEXT NOT NULL,
+  secret      TEXT NOT NULL DEFAULT '',
+  content_type TEXT NOT NULL DEFAULT 'application/json',
+  -- JSON array of event names: e.g. '["issues","issue_comment"]'.
+  events      TEXT NOT NULL DEFAULT '["issues","issue_comment"]',
+  active      INTEGER NOT NULL DEFAULT 1,
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS webhooks_project
+  ON webhooks (project_id);
+
+-- Delivery history. One row per attempt. Retries append new rows (don't overwrite),
+-- so a failed webhook shows the full retry trail.
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  webhook_id    INTEGER NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
+  event         TEXT NOT NULL,
+  delivery_uuid TEXT NOT NULL,
+  payload       TEXT NOT NULL,
+  response_status INTEGER,
+  response_body TEXT,
+  duration_ms   INTEGER,
+  error         TEXT,
+  created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS deliveries_webhook
+  ON webhook_deliveries (webhook_id);
+CREATE INDEX IF NOT EXISTS deliveries_created
+  ON webhook_deliveries (created_at DESC);
