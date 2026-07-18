@@ -125,12 +125,20 @@ input[type=text],input[type=password],input[type=email]{width:100%;box-sizing:bo
 input:focus{outline:none;border-color:var(--accent)}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:.6rem}
 button.primary{padding:.5rem 1rem;border:0;border-radius:6px;background:var(--green);color:#fff;font-size:13px;cursor:pointer}
+.admin-nav{display:flex;gap:.5rem;margin-bottom:.9rem}
+.admin-nav a{padding:.35rem .8rem;border-radius:6px;background:var(--bg-elev);border:1px solid var(--border);font-size:13px;color:var(--text)}
+.admin-nav a:hover{border-color:var(--accent)}
 </style></head><body>
 <header class="topbar"><span style="font-weight:600">👥 用户管理</span></header>
 ${tabNavHTML("projects")}
 <main class="wrap">
 <h1>用户</h1>
 ${flashHtml}
+
+<div class="admin-nav">
+  <a href="/admin/users">用户</a>
+  <a href="/admin/tokens">所有 Token</a>
+</div>
 
 <form class="card" method="POST" action="/admin/users/create">
 <h2>新建用户</h2>

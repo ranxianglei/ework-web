@@ -646,10 +646,38 @@ export function listPatsForUser(login: string): PatRow[] {
     .all(login) as PatRow[];
 }
 
+export interface PatWithUser extends PatRow {
+  user_kind: UserKind | null;
+  user_is_admin: number | null;
+  user_is_active: number | null;
+}
+
+export function listAllPatsWithUsers(): PatWithUser[] {
+  return rawDB()
+    .query(
+      `SELECT p.*, u.kind AS user_kind, u.is_admin AS user_is_admin, u.is_active AS user_is_active
+       FROM personal_access_tokens p
+       LEFT JOIN users u ON u.login = p.user_login
+       ORDER BY p.created_at DESC`
+    )
+    .all() as PatWithUser[];
+}
+
 export function revokePat(id: number, login: string): void {
   const row = getPat(id);
   if (!row) throw new StoreError(404, "token 不存在");
   if (row.user_login !== login) throw new StoreError(403, "无权操作他人 token");
+  if (row.revoked_at) return;
+  rawDB()
+    .query("UPDATE personal_access_tokens SET revoked_at = ? WHERE id = ?")
+    .run(now(), id);
+}
+
+// Admin override: revoke any token regardless of owner. Caller MUST check
+// ctx.user.is_admin === 1 before invoking.
+export function revokePatAsAdmin(id: number): void {
+  const row = getPat(id);
+  if (!row) throw new StoreError(404, "token 不存在");
   if (row.revoked_at) return;
   rawDB()
     .query("UPDATE personal_access_tokens SET revoked_at = ? WHERE id = ?")

@@ -15,6 +15,7 @@ import { buildIssueNew } from "./views/issueNew";
 import { buildSettingsPage } from "./views/settings";
 import { buildMePage, buildAdminUsersPage } from "./views/users";
 import { buildTokensPage, buildTokenCreatedPage } from "./views/tokens";
+import { buildAdminTokensPage } from "./views/adminTokens";
 import { buildSessionList, buildSessionView, renderNewMessages, renderBatchHTML } from "./views/sessionLog";
 import { buildFileView, FileViewError, readFileSince, serveRawFile } from "./fileview";
 import { translateText, translateTextStream, TranslateError } from "./translate";
@@ -40,6 +41,8 @@ import {
   createPat,
   listPatsForUser,
   revokePat,
+  revokePatAsAdmin,
+  listAllPatsWithUsers,
   canWriteProject,
   canAdminProject,
   ensureProjectBootstrapAdmin,
@@ -617,6 +620,24 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       const flashMsg = url.searchParams.get("ok") === "1" ? url.searchParams.get("ok_msg")! : url.searchParams.get("err");
       const flash = flashKind ? { kind: flashKind as "ok" | "err", msg: flashMsg ?? "" } : null;
       return html(buildAdminUsersPage(ctx.user!, listUsers(), flash));
+    }
+  }
+
+  if (url.pathname === "/admin/tokens") {
+    const flashKind = url.searchParams.get("ok") === "1" ? "ok" : url.searchParams.get("err") ? "err" : null;
+    const flashMsg = url.searchParams.get("ok") === "1" ? url.searchParams.get("ok_msg")! : url.searchParams.get("err");
+    const flash = flashKind ? { kind: flashKind as "ok" | "err", msg: flashMsg ?? "" } : null;
+    return html(buildAdminTokensPage(ctx.user!, listAllPatsWithUsers(), flash));
+  }
+
+  const adminPatRevoke = url.pathname.match(/^\/admin\/tokens\/(\d+)\/revoke$/);
+  if (adminPatRevoke && req.method === "POST") {
+    const id = Number(adminPatRevoke[1]);
+    try {
+      revokePatAsAdmin(id);
+      return Response.redirect(`${url.origin}/admin/tokens?ok=1&ok_msg=${encodeURIComponent("已吊销")}`, 303);
+    } catch (e) {
+      return Response.redirect(`${url.origin}/admin/tokens?err=${encodeURIComponent(errMsg(e))}`, 303);
     }
   }
 
