@@ -1,5 +1,5 @@
 import { THEME_CSS, escapeHtml, tabNavHTML } from "../render/layout";
-import type { PatRow, UserRow } from "../store";
+import { parsePatIpAllowlist, type PatRow, type UserRow } from "../store";
 
 interface Flash {
   kind: "ok" | "err";
@@ -14,6 +14,12 @@ function statusBadge(row: PatRow): string {
   return `<span class="badge active">生效中</span>`;
 }
 
+function ipBadge(row: PatRow): string {
+  const list = parsePatIpAllowlist(row.ip_allowlist ?? "[]");
+  if (list.length === 0) return `<span class="muted">全部</span>`;
+  return list.map((c) => `<code class="cidr">${escapeHtml(c)}</code>`).join(" ");
+}
+
 export function buildTokensPage(
   viewer: UserRow,
   rows: PatRow[],
@@ -22,7 +28,7 @@ export function buildTokensPage(
   const flashHtml = flash ? `<div class="flash ${flash.kind}">${escapeHtml(flash.msg)}</div>` : "";
   const rowsHtml = rows.length
     ? `<table>
-<thead><tr><th>名称</th><th>token</th><th>状态</th><th>最近使用</th><th>创建</th><th>过期</th><th>操作</th></tr></thead>
+<thead><tr><th>名称</th><th>token</th><th>状态</th><th>IP 限制</th><th>最近使用</th><th>创建</th><th>过期</th><th>操作</th></tr></thead>
 <tbody>
 ${rows
   .map((r) => {
@@ -33,6 +39,7 @@ ${rows
 <td class="name">${escapeHtml(r.name)}</td>
 <td class="tok"><code>…${escapeHtml(r.token_last_eight)}</code></td>
 <td>${statusBadge(r)}</td>
+<td class="ip">${ipBadge(r)}</td>
 <td class="muted">${lastUsed}</td>
 <td class="muted">${escapeHtml(r.created_at.slice(0, 10))}</td>
 <td class="muted">${expires}</td>
@@ -74,7 +81,10 @@ td.act button,.btn-danger{padding:.3rem .65rem;border:0;border-radius:4px;backgr
 .hint{color:var(--text-muted);font-size:12px;line-height:1.5;margin:.4rem 0}
 label{display:block;font-size:12px;color:var(--text-muted);margin:0 0 .25rem}
 input[type=text],input[type=date]{width:100%;box-sizing:border-box;padding:.5rem .65rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font:inherit;font-size:14px;margin-bottom:.7rem}
-input:focus{outline:none;border-color:var(--accent)}
+textarea{width:100%;box-sizing:border-box;padding:.5rem .65rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font:inherit;font-size:14px;margin-bottom:.7rem;resize:vertical;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px}
+input:focus,textarea:focus{outline:none;border-color:var(--accent)}
+.ip code.cidr{background:var(--bg-muted);padding:.05rem .3rem;border-radius:3px;font-size:11px;color:var(--text-muted);margin-right:.2rem}
+.ip .muted{color:var(--text-muted);font-size:12px}
 button.primary{padding:.5rem 1rem;border:0;border-radius:6px;background:var(--accent);color:#fff;font-size:13px;cursor:pointer}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:.6rem}
 </style></head><body>
@@ -95,7 +105,9 @@ ${rowsHtml}
 <div><label for="n-name">名称（用于识别用途，例如 "echo-bot"）</label><input id="n-name" name="name" type="text" required maxlength="64" pattern="[A-Za-z0-9_\\u4e00-\\u9fa5 .\\-()]{1,64}"></div>
 <div><label for="n-expires">过期日期（可选，留空=永久）</label><input id="n-expires" name="expires_at" type="date"></div>
 </div>
-<div class="hint">创建后明文只显示一次。scopes 暂未启用细粒度（token 等同账户全部权限），细粒度权限在 project_members 落地后生效。</div>
+<label for="n-ip">IP 白名单（可选，留空=不限制）</label>
+<textarea id="n-ip" name="ip_allowlist" rows="2" placeholder="192.168.1.0/24, 10.0.0.5（逗号或换行分隔，仅 IPv4）"></textarea>
+<div class="hint">创建后明文只显示一次。scopes 暂未启用细粒度（token 等同账户全部权限），细粒度权限走 <a href="/projects">项目成员</a> 控制。</div>
 <button class="primary" type="submit">生成 token</button>
 </form>
 </main></body></html>`;

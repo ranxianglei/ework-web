@@ -287,7 +287,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     });
   }
 
-  const auth = await checkAuth(req, cfg);
+  const auth = await checkAuth(req, cfg, ip);
   if (!auth.ok) {
     const next = sanitizeNext(url.pathname + url.search);
     return Response.redirect(`${url.origin}/login?next=${encodeURIComponent(next)}`, 302);
@@ -591,8 +591,10 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     const form = await req.formData().catch(() => new FormData());
     const name = String(form.get("name") ?? "").trim();
     const expiresAt = String(form.get("expires_at") ?? "").trim() || null;
+    const ipAllowRaw = String(form.get("ip_allowlist") ?? "").trim();
+    const ipAllowlist = ipAllowRaw ? ipAllowRaw.split(/[\s,]+/).filter(Boolean) : undefined;
     try {
-      const result = await createPat({ user_login: me.login, name, expires_at: expiresAt });
+      const result = await createPat({ user_login: me.login, name, expires_at: expiresAt, ip_allowlist: ipAllowlist });
       return html(buildTokenCreatedPage(me, result.plaintext, result.row.name));
     } catch (e) {
       return Response.redirect(`${url.origin}/me/tokens?err=${encodeURIComponent(errMsg(e))}`, 303);

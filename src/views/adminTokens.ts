@@ -1,5 +1,5 @@
 import { THEME_CSS, escapeHtml, escapeAttr, tabNavHTML } from "../render/layout";
-import { type PatWithUser, type UserRow } from "../store";
+import { parsePatIpAllowlist, type PatWithUser, type UserRow } from "../store";
 
 interface Flash {
   kind: "ok" | "err";
@@ -33,12 +33,16 @@ export function buildAdminTokensPage(
   const revokedCount = rows.length - activeCount;
   const rowsHtml = rows.length
     ? `<table>
-<thead><tr><th>名称</th><th>用户</th><th>token</th><th>scopes</th><th>状态</th><th>最近使用</th><th>创建</th><th>操作</th></tr></thead>
+<thead><tr><th>名称</th><th>用户</th><th>token</th><th>scopes</th><th>IP</th><th>状态</th><th>最近使用</th><th>创建</th><th>操作</th></tr></thead>
 <tbody>
 ${rows
   .map((r) => {
     const lastUsed = r.last_used_at ? escapeHtml(r.last_used_at.slice(0, 16).replace("T", " ")) : "—";
     const scopes = parseScopes(r.scopes).map((s) => `<code>${escapeHtml(s)}</code>`).join(" ") || "—";
+    const ipList = parsePatIpAllowlist(r.ip_allowlist ?? "[]");
+    const ipCell = ipList.length === 0
+      ? `<span class="muted">全部</span>`
+      : ipList.map((c) => `<code class="cidr">${escapeHtml(c)}</code>`).join(" ");
     const userBadges: string[] = [];
     if (r.user_is_admin === 1) userBadges.push(`<span class="badge admin">admin</span>`);
     if (r.user_kind === "bot") userBadges.push(`<span class="badge bot">bot</span>`);
@@ -51,6 +55,7 @@ ${rows
 <td class="user">${escapeHtml(r.user_login)} ${ownerNote} ${userBadges.join(" ")}</td>
 <td class="tok"><code>…${escapeHtml(r.token_last_eight)}</code></td>
 <td class="scopes">${scopes}</td>
+<td class="ip">${ipCell}</td>
 <td>${statusBadge(r)}</td>
 <td class="muted">${lastUsed}</td>
 <td class="muted">${escapeHtml(r.created_at.slice(0, 10))}</td>
@@ -84,6 +89,8 @@ th,td{text-align:left;padding:.55rem .45rem;border-bottom:1px solid var(--border
 th{color:var(--text-muted);font-weight:600;font-size:12px}
 td.tok code{background:var(--bg);padding:.1rem .35rem;border-radius:4px;border:1px solid var(--border);font-size:12px}
 td.scopes code{background:var(--bg-muted);padding:.05rem .3rem;border-radius:3px;font-size:11px;color:var(--text-muted);margin-right:.2rem}
+td.ip code.cidr{background:var(--bg-muted);padding:.05rem .3rem;border-radius:3px;font-size:11px;color:var(--text-muted);margin-right:.2rem}
+td.ip .muted{color:var(--text-muted);font-size:12px}
 td.name{font-weight:600}
 td.user{font-weight:600;white-space:nowrap}
 td.muted{color:var(--text-muted);font-size:12px;white-space:nowrap}
