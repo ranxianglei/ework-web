@@ -620,13 +620,32 @@ export function parsePatIpAllowlist(raw: string): string[] {
   }
 }
 
+function normalizeIpV4(ip: string): string | null {
+  if (!ip) return null;
+  let s = ip.trim();
+  if (s.startsWith("[")) {
+    const end = s.indexOf("]");
+    if (end > 0) s = s.slice(1, end);
+  }
+  const v4mapped = s.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i);
+  if (v4mapped) {
+    const v4 = v4mapped[1] ?? "";
+    return parseIPv4(v4) ? v4 : null;
+  }
+  const v4port = s.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d+)$/);
+  if (v4port) {
+    const v4 = v4port[1] ?? "";
+    return parseIPv4(v4) ? v4 : null;
+  }
+  return parseIPv4(s) ? s : null;
+}
+
 // Returns true if `ip` satisfies the allowlist. Empty allowlist = allow all.
 // ip is required (caller must pass the request IP, "unknown" never matches).
 export function ipAllowedBy(ip: string | null | undefined, allowlist: string[]): boolean {
   if (allowlist.length === 0) return true;
-  if (!ip) return false;
-  // Strip port from "[v6]:port" or "v4:port" forms (best-effort).
-  const cleanIp = ip.replace(/^\[|\]$/g, "").replace(/:\d+$/, "");
+  const cleanIp = normalizeIpV4(typeof ip === "string" ? ip : "");
+  if (!cleanIp) return false;
   return allowlist.some((cidr) => ipInCidr(cleanIp, cidr));
 }
 
