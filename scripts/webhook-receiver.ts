@@ -25,7 +25,7 @@ const LOG_FILE = resolve(process.env.LOG_FILE ?? "./webhook-received.jsonl");
 const EWORK_URL = (process.env.EWORK_URL ?? "http://127.0.0.1:1196").replace(/\/$/, "");
 const EWORK_TOKEN = process.env.EWORK_TOKEN ?? "";
 const REPLY_MODE = !!EWORK_TOKEN;
-const REPLY_MARKER = "🤖 echo:";
+const REPLY_MARKER = "[bot] echo:";
 
 mkdirSync(resolve(LOG_FILE, ".."), { recursive: true });
 
