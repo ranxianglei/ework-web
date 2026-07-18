@@ -205,12 +205,13 @@ export function snipHighlight(text: string, needle: string, radius = 50): string
   return `${prefix}${escapeHtml(flat.slice(start, idx))}<mark class="hl">${escapeHtml(flat.slice(idx, idx + n.length))}</mark>${escapeHtml(flat.slice(idx + n.length, end))}${suffix}`;
 }
 
-export function tabNavHTML(active: "projects" | "issues" | "sessions", user?: { login: string; is_admin: boolean }): string {
+export function tabNavHTML(active: "projects" | "issues" | "sessions" | "me", user?: { login: string; is_admin: number | boolean }): string {
   const p = active === "projects" ? " active" : "";
   const i = active === "issues" ? " active" : "";
   const s = active === "sessions" ? " active" : "";
+  const m = active === "me" ? " active" : "";
   const userTab = user
-    ? `<a class="tab" href="/me" title="${escapeAttr(user.login)}">👤 ${escapeHtml(user.login)}</a>`
+    ? `<a class="tab${m}" href="/me" title="${escapeAttr(user.login)}">👤 ${escapeHtml(user.login)}</a>`
     : "";
   return `<nav class="tabs"><a class="tab${p}" href="/projects">项目</a><a class="tab${i}" href="/issues">Issues</a><a class="tab${s}" href="/sessions">会话</a><a class="tab" href="/settings" style="margin-left:auto">⚙️ 设置</a>${userTab}</nav>`;
 }

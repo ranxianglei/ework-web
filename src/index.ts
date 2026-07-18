@@ -14,6 +14,7 @@ import { buildIssuesFeed } from "./views/issues";
 import { buildIssueNew } from "./views/issueNew";
 import { buildSettingsPage } from "./views/settings";
 import { buildMePage, buildAdminUsersPage } from "./views/users";
+import { buildTokensPage, buildTokenCreatedPage } from "./views/tokens";
 import { buildSessionList, buildSessionView, renderNewMessages, renderBatchHTML } from "./views/sessionLog";
 import { buildFileView, FileViewError, readFileSince, serveRawFile } from "./fileview";
 import { translateText, translateTextStream, TranslateError } from "./translate";
@@ -36,6 +37,9 @@ import {
   getUserByLogin,
   setUserPassword,
   listUsers,
+  createPat,
+  listPatsForUser,
+  revokePat,
   type UserRow,
 } from "./store";
 import {
@@ -552,6 +556,42 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
       return Response.redirect(`${url.origin}/me?err=${encodeURIComponent(errMsg(e))}`, 303);
     }
     return Response.redirect(`${url.origin}/me?ok=1&ok_msg=${encodeURIComponent("密码已更新")}`, 303);
+  }
+
+  if (url.pathname === "/me/tokens") {
+    const me = ctx.user!;
+    const flashKind = url.searchParams.get("ok") === "1" ? "ok" : url.searchParams.get("err") ? "err" : null;
+    const flashMsg = url.searchParams.get("ok") === "1" ? url.searchParams.get("ok_msg")! : url.searchParams.get("err");
+    const flash = flashKind ? { kind: flashKind as "ok" | "err", msg: flashMsg ?? "" } : null;
+    return html(buildTokensPage(me, listPatsForUser(me.login), flash));
+  }
+
+  if (url.pathname === "/me/tokens/create" && req.method === "POST") {
+    const me = ctx.user!;
+    if (!rateLimit(`pat-create:${ip}`, 10, 10 / 60)) {
+      return Response.redirect(`${url.origin}/me/tokens?err=${encodeURIComponent("太快了，稍后再试")}`, 303);
+    }
+    const form = await req.formData().catch(() => new FormData());
+    const name = String(form.get("name") ?? "").trim();
+    const expiresAt = String(form.get("expires_at") ?? "").trim() || null;
+    try {
+      const result = await createPat({ user_login: me.login, name, expires_at: expiresAt });
+      return html(buildTokenCreatedPage(me, result.plaintext, result.row.name));
+    } catch (e) {
+      return Response.redirect(`${url.origin}/me/tokens?err=${encodeURIComponent(errMsg(e))}`, 303);
+    }
+  }
+
+  const patRevoke = url.pathname.match(/^\/me\/tokens\/(\d+)\/revoke$/);
+  if (patRevoke && req.method === "POST") {
+    const me = ctx.user!;
+    const id = Number(patRevoke[1]);
+    try {
+      revokePat(id, me.login);
+      return Response.redirect(`${url.origin}/me/tokens?ok=1&ok_msg=${encodeURIComponent("已吊销")}`, 303);
+    } catch (e) {
+      return Response.redirect(`${url.origin}/me/tokens?err=${encodeURIComponent(errMsg(e))}`, 303);
+    }
   }
 
   if (url.pathname.startsWith("/admin/") && ctx.user!.is_admin !== 1) {

@@ -52,7 +52,7 @@ ${user.password_hash ? `<label for="old">当前密码</label><input id="old" nam
 <div>类型：<span class="badge ${user.kind === "bot" ? "bot" : ""}">${escapeHtml(user.kind)}</span></div>
 ${user.email ? `<div>邮箱：${escapeHtml(user.email)}</div>` : ""}
 ${user.display_name ? `<div>显示名：${escapeHtml(user.display_name)}</div>` : ""}
-<div class="hint">PAT (Personal Access Token) 留待 Phase 3.3 引入 bot 账户时一并上线。</div>
+<div class="hint">PAT (Personal Access Token) 用于 agent / CLI 认证，<a href="/me/tokens">前往管理 →</a></div>
 </div>
 </main></body></html>`;
 }
