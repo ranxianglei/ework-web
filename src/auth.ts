@@ -83,7 +83,7 @@ function parseV2Cookie(value: string): { login: string; issued: string; sig: str
   return { login, issued, sig };
 }
 
-export async function checkAuth(req: Request, cfg: Config): Promise<AuthResult> {
+export async function checkAuth(req: Request, cfg: Config, ip?: string | null): Promise<AuthResult> {
   const cookies = parseCookies(req.headers.get("cookie"));
   const cookieVal = cookies[authCookieName(cfg)];
 
@@ -121,7 +121,7 @@ export async function checkAuth(req: Request, cfg: Config): Promise<AuthResult> 
   if (authHeader?.toLowerCase().startsWith("bearer ")) {
     const token = authHeader.slice(7).trim();
     if (token) {
-      const user = await verifyPat(token);
+      const user = await verifyPat(token, ip);
       if (user) return { ok: true, user };
     }
   }
