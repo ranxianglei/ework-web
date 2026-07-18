@@ -20,6 +20,7 @@ import { rateLimit } from "./ratelimit";
 import {
   StoreError,
   getProject,
+  getProjectById,
   getIssueWithMeta,
   createIssue,
   createProject,
@@ -36,7 +37,20 @@ import {
   isImageContentType,
   MAX_ATTACHMENT_BYTES,
 } from "./attachments";
+import {
+  emitIssueEvent,
+  emitCommentEvent,
+  emitPingEvent,
+  listWebhooks,
+  createWebhook,
+  deleteWebhook,
+  setWebhookActive,
+  getWebhook,
+  listDeliveries,
+  type WebhookEventName,
+} from "./webhooks";
 import type { CommentView } from "./render/components";
+import { buildWebhooksPage } from "./views/webhooks";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR = join(__dirname, "static");
@@ -98,6 +112,8 @@ const API_RE = /^\/api\/([^/]+)\/([^/]+)\/issues\/(\d+)\/(page|since)$/;
 const COMMENT_POST_RE = /^\/api\/([^/]+)\/([^/]+)\/issues\/(\d+)\/comment$/;
 const UPLOAD_RE = /^\/api\/([^/]+)\/([^/]+)\/issues\/(\d+)\/upload$/;
 const ATTACHMENT_RE = /^\/attachments\/([0-9a-fA-F-]+)$/;
+const REPO_WEBHOOKS_RE = /^\/([^/]+)\/([^/]+)\/settings\/webhooks$/;
+const WH_ACTION_RE = /^\/__wh\/(\d+)\/(delete|toggle|test)$/;
 const SESSIONS_RE = /^\/sessions$/;
 const SESSION_VIEW_RE = /^\/sessions\/([A-Za-z0-9_-]+)$/;
 const SESSION_SINCE_RE = /^\/api\/sessions\/([A-Za-z0-9_-]+)\/since$/;
@@ -578,9 +594,14 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         if (payload.close === true) {
           setIssueState(issue.id, "closed");
           closed = true;
+          void emitIssueEvent(project.id, issue.id, "closed", url.origin);
         } else if (payload.reopen === true) {
           setIssueState(issue.id, "open");
           reopened = true;
+          void emitIssueEvent(project.id, issue.id, "reopened", url.origin);
+        }
+        if (view) {
+          void emitCommentEvent(project.id, issue.id, view.id, url.origin);
         }
         return json({ comment: view, closed, reopened });
       } catch (e) {
@@ -600,6 +621,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         let project = getProject(owner, repo);
         if (!project) project = createProjectSafe(owner, repo);
         const issue = createIssue(project.id, title, body, cfg.operatorLogin);
+        void emitIssueEvent(project.id, issue.id, "opened", url.origin);
         return Response.redirect(
           `${url.origin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${issue.number}`,
           303
@@ -608,6 +630,56 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         return html(errorPage("创建失败", errMsg(e)), e instanceof StoreError ? e.status : 500);
       }
     }
+
+    if (url.pathname === "/__wh") {
+      const form = await req.formData().catch(() => new FormData());
+      const projectId = Number(form.get("project_id") ?? "0");
+      const url_ = String(form.get("url") ?? "").trim();
+      const secret = String(form.get("secret") ?? "");
+      const events = form.getAll("events") as string[];
+      if (!projectId) return html(errorPage("缺少 project_id", "返回重试"), 400);
+      try {
+        const project = getProjectById(projectId);
+        if (!project) return html(errorPage("项目不存在", ""), 404);
+        const validEvents = (events.length > 0 ? events : ["issues", "issue_comment"])
+          .filter((e): e is WebhookEventName => e === "issues" || e === "issue_comment");
+        const wh = createWebhook({
+          project_id: projectId,
+          url: url_,
+          secret,
+          events: validEvents,
+        });
+        return Response.redirect(
+          `${url.origin}/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}/settings/webhooks#wh-${wh.id}`,
+          303
+        );
+      } catch (e) {
+        return html(errorPage("添加失败", errMsg(e)), e instanceof StoreError ? e.status : 500);
+      }
+    }
+
+    const whAction = url.pathname.match(WH_ACTION_RE);
+    if (whAction) {
+      const [, idStr, action] = whAction;
+      const id = Number(idStr || "0");
+      if (!id) return html(errorPage("bad webhook id", ""), 400);
+      const wh = getWebhook(id);
+      if (!wh) return html(errorPage("webhook 不存在", ""), 404);
+      const project = getProjectById(wh.project_id);
+      if (!project) return html(errorPage("项目不存在", ""), 404);
+      const back = `${url.origin}/${encodeURIComponent(project.owner)}/${encodeURIComponent(project.name)}/settings/webhooks`;
+      if (action === "delete") {
+        deleteWebhook(id);
+      } else if (action === "toggle") {
+        const form = await req.formData().catch(() => new FormData());
+        const wantActive = form.get("active") === "1";
+        setWebhookActive(id, wantActive);
+      } else if (action === "test") {
+        void emitPingEvent(wh.project_id, url.origin);
+      }
+      return Response.redirect(back, 303);
+    }
+
     return json({ error: "not found" }, 404);
   }
 
@@ -673,6 +745,21 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     } catch (e) {
       return html(errorPage("加载失败", errMsg(e)), e instanceof StoreError ? e.status : 500);
     }
+  }
+
+  const whPage = url.pathname.match(REPO_WEBHOOKS_RE);
+  if (whPage) {
+    const [, owner, repo] = whPage;
+    if (!(owner && repo)) return html(errorPage("404", "bad path"), 404);
+    const project = getProject(owner, repo);
+    if (!project) return html(errorPage("项目不存在", "项目未创建"), 404);
+    const hooks = listWebhooks(project.id);
+    const deliveriesByWebhook = new Map(
+      hooks.map((h) => [h.id, listDeliveries(h.id, 10)] as const)
+    );
+    return html(
+      buildWebhooksPage({ project, webhooks: hooks, deliveriesByWebhook })
+    );
   }
 
   const repoMatch = url.pathname.match(REPO_RE);
