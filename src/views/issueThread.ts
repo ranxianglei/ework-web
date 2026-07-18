@@ -31,10 +31,10 @@ export interface IssueThreadPayload {
   comments: CommentView[];
 }
 
-function toView(c: CommentRow, operatorLogin: string): CommentView {
+function toView(c: CommentRow): CommentView {
   return {
     id: c.id,
-    tag: classifyActor(c.body, c.author, operatorLogin),
+    tag: classifyActor(c.body),
     login: c.author,
     avatar: "",
     created_at: c.created_at,
@@ -42,8 +42,8 @@ function toView(c: CommentRow, operatorLogin: string): CommentView {
   };
 }
 
-export function viewsFromComments(rows: CommentRow[], operatorLogin: string): CommentView[] {
-  const views = rows.map((r) => toView(r, operatorLogin));
+export function viewsFromComments(rows: CommentRow[]): CommentView[] {
+  const views = rows.map((r) => toView(r));
   hydrateReactions(views);
   return views;
 }
@@ -95,7 +95,7 @@ export function buildIssueThread(
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const currentPage = totalPages;
   const { rows } = listCommentsPage(issue.id, currentPage, PAGE_SIZE);
-  const views = viewsFromComments(rows, cfg.operatorLogin);
+  const views = viewsFromComments(rows);
   const hasOlder = currentPage > 1;
   const displayViews = orderForDisplay(views, cfg.commentSort);
   const payload = payloadFromComments(issue, displayViews, currentPage, hasOlder, cfg.commentSort);
@@ -130,7 +130,6 @@ export interface IssuePageData {
 }
 
 export function fetchIssuePage(
-  cfg: Config,
   owner: string,
   repo: string,
   number: number,
@@ -141,12 +140,11 @@ export function fetchIssuePage(
   const issue = getIssueWithMeta(project.id, number);
   if (!issue) throw new StoreError(404, `#${number} 不存在`);
   const { rows, page: clamped } = listCommentsPage(issue.id, page, PAGE_SIZE);
-  const views = viewsFromComments(rows, cfg.operatorLogin);
+  const views = viewsFromComments(rows);
   return { issue, views, currentPage: clamped, hasOlder: clamped > 1 };
 }
 
 export function fetchIssueSince(
-  cfg: Config,
   owner: string,
   repo: string,
   number: number,
@@ -157,7 +155,7 @@ export function fetchIssueSince(
   const issue = getIssueWithMeta(project.id, number);
   if (!issue) throw new StoreError(404, `#${number} 不存在`);
   const rows = listCommentsSince(issue.id, sinceISO);
-  return viewsFromComments(rows, cfg.operatorLogin);
+  return viewsFromComments(rows);
 }
 
 export function safeJsonEmbed(v: unknown): string {

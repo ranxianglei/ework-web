@@ -49,7 +49,7 @@ import {
   listDeliveries,
   type WebhookEventName,
 } from "./webhooks";
-import type { CommentView } from "./render/components";
+import { classifyActor, type CommentView } from "./render/components";
 import { buildWebhooksPage } from "./views/webhooks";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -582,7 +582,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
           const c = postComment(issue.id, body, cfg.operatorLogin);
           view = {
             id: c.id,
-            tag: "human",
+            tag: classifyActor(c.body),
             login: c.author,
             avatar: "",
             created_at: c.created_at,
@@ -692,7 +692,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
     try {
       if (kind === "page") {
         const page = Math.max(1, Number(url.searchParams.get("page") ?? "1") || 1);
-        const { issue, views, currentPage, hasOlder } = fetchIssuePage(cfg, owner, repo, number, page);
+        const { issue, views, currentPage, hasOlder } = fetchIssuePage(owner, repo, number, page);
         const payload = {
           owner,
           repo,
@@ -707,7 +707,7 @@ async function handle(req: Request, url: URL, ip: string, ctx: { authed: boolean
         return json(payload);
       }
       const since = url.searchParams.get("since") ?? new Date(0).toISOString();
-      const views = fetchIssueSince(cfg, owner, repo, number, since);
+      const views = fetchIssueSince(owner, repo, number, since);
       return json({ comments: views });
     } catch (e) {
       return json({ error: errMsg(e) }, e instanceof StoreError ? e.status : 500);

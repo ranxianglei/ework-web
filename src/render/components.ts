@@ -2,11 +2,15 @@ import { actionBarHTML } from "./layout";
 
 export type ActorTag = "human" | "bot" | "system";
 
-export function classifyActor(body: string, authorLogin: string, botUsername: string): ActorTag {
+// classifyActor determines the human/bot/system label from the comment body
+// prefix only. We intentionally do NOT match on author-login === operator
+// because ework currently has no separate bot accounts — both the user and
+// any automation share the operator login, so author-based heuristics would
+// mislabel the user's own comments as bot (see dog/awork-web#8).
+export function classifyActor(body: string): ActorTag {
   const b = body ?? "";
   if (b.startsWith("[system]")) return "system";
   if (b.startsWith("[bot]")) return "bot";
-  if (botUsername && authorLogin === botUsername) return "bot";
   return "human";
 }
 
