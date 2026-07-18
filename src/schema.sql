@@ -149,3 +149,22 @@ CREATE INDEX IF NOT EXISTS pat_user
   ON personal_access_tokens (user_login);
 CREATE INDEX IF NOT EXISTS pat_last_eight
   ON personal_access_tokens (token_last_eight);
+
+-- Per-project RBAC. Roles follow Gitea semantics:
+--   reader: can read issues + comments (currently no-op since all authed users
+--           can read; reserved for future private projects)
+--   writer: + create issues, comment, close/reopen, upload attachments, react
+--   admin:  + manage project webhooks + manage project members
+-- Site-admins (users.is_admin=1) bypass all checks. PAT scope enforcement also
+-- routes through here: a write-scoped PAT can only write where the owning user
+-- has writer+ role on the target project.
+CREATE TABLE IF NOT EXISTS project_members (
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  user_login TEXT NOT NULL REFERENCES users(login) ON DELETE CASCADE,
+  role       TEXT NOT NULL DEFAULT 'writer'
+             CHECK (role IN ('reader','writer','admin')),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (project_id, user_login)
+);
+CREATE INDEX IF NOT EXISTS project_members_user
+  ON project_members (user_login);

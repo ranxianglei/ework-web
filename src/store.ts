@@ -677,3 +677,113 @@ export async function verifyPat(rawToken: string): Promise<UserRow | null> {
   }
   return null;
 }
+
+export type ProjectRole = "reader" | "writer" | "admin";
+
+export interface ProjectMembership {
+  project_id: number;
+  user_login: string;
+  role: ProjectRole;
+  created_at: string;
+}
+
+const ROLE_RANK: Record<ProjectRole, number> = { reader: 1, writer: 2, admin: 3 };
+
+export interface ProjectMemberWithUser extends ProjectMembership {
+  user_kind: UserKind;
+  user_display_name: string | null;
+  user_is_active: number;
+}
+
+export function listProjectMembersWithUsers(projectId: number): ProjectMemberWithUser[] {
+  return rawDB()
+    .query(
+      `SELECT m.*, u.kind AS user_kind, u.display_name AS user_display_name, u.is_active AS user_is_active
+       FROM project_members m JOIN users u ON u.login = m.user_login
+       WHERE m.project_id = ?
+       ORDER BY CASE m.role WHEN 'admin' THEN 0 WHEN 'writer' THEN 1 ELSE 2 END, m.created_at ASC`
+    )
+    .all(projectId) as ProjectMemberWithUser[];
+}
+
+export function listMembershipsForUser(userLogin: string): ProjectMembership[] {
+  return rawDB()
+    .query("SELECT * FROM project_members WHERE user_login = ? ORDER BY created_at ASC")
+    .all(userLogin) as ProjectMembership[];
+}
+
+export function getProjectMembership(projectId: number, userLogin: string): ProjectMembership | null {
+  return (
+    (rawDB()
+      .query("SELECT * FROM project_members WHERE project_id = ? AND user_login = ?")
+      .get(projectId, userLogin) as ProjectMembership | null) ?? null
+  );
+}
+
+// Returns the user's effective role on a project, or null. Site-admins return
+// "admin" (the highest project role) so caller's canWrite/canAdmin work without
+// a separate code path. Caller still needs to check user.is_admin separately
+// for site-wide admin powers (user management, etc.).
+export function getRoleOnProject(projectId: number, user: { login: string; is_admin: number } | null): ProjectRole | null {
+  if (!user) return null;
+  if (user.is_admin === 1) return "admin";
+  const m = getProjectMembership(projectId, user.login);
+  return m?.role ?? null;
+}
+
+export function canWriteProject(projectId: number, user: { login: string; is_admin: number } | null): boolean {
+  const r = getRoleOnProject(projectId, user);
+  return r !== null && ROLE_RANK[r] >= ROLE_RANK.writer;
+}
+
+export function canAdminProject(projectId: number, user: { login: string; is_admin: number } | null): boolean {
+  const r = getRoleOnProject(projectId, user);
+  return r === "admin";
+}
+
+export function addProjectMember(projectId: number, userLogin: string, role: ProjectRole): ProjectMembership {
+  const login = userLogin.trim();
+  if (!getUserByLogin(login)) throw new StoreError(404, `用户 ${login} 不存在`);
+  const ts = now();
+  const db = rawDB();
+  db.query(
+    "INSERT OR IGNORE INTO project_members (project_id, user_login, role, created_at) VALUES (?, ?, ?, ?)"
+  ).run(projectId, login, role, ts);
+  return getProjectMembership(projectId, login)!;
+}
+
+export function setProjectMemberRole(projectId: number, userLogin: string, role: ProjectRole): void {
+  const m = getProjectMembership(projectId, userLogin);
+  if (!m) throw new StoreError(404, `用户 ${userLogin} 不是该项目成员`);
+  rawDB()
+    .query("UPDATE project_members SET role = ? WHERE project_id = ? AND user_login = ?")
+    .run(role, projectId, userLogin);
+}
+
+export function removeProjectMember(projectId: number, userLogin: string): void {
+  rawDB()
+    .query("DELETE FROM project_members WHERE project_id = ? AND user_login = ?")
+    .run(projectId, userLogin);
+}
+
+export function countProjectAdmins(projectId: number): number {
+  const row = rawDB()
+    .query("SELECT COUNT(*) AS n FROM project_members WHERE project_id = ? AND role = 'admin'")
+    .get(projectId) as { n: number };
+  return row.n;
+}
+
+// Idempotent bootstrap: if the project has zero members, add `login` as admin.
+// Called from project-create flow + lazily from project settings page when a
+// site-admin first opens it on an old (pre-RBAC) project.
+export function ensureProjectBootstrapAdmin(projectId: number, login: string): void {
+  const existing = rawDB()
+    .query("SELECT COUNT(*) AS n FROM project_members WHERE project_id = ?")
+    .get(projectId) as { n: number };
+  if (existing.n > 0) return;
+  if (!getUserByLogin(login)) return;
+  const ts = now();
+  rawDB()
+    .query("INSERT OR IGNORE INTO project_members (project_id, user_login, role, created_at) VALUES (?, ?, 'admin', ?)")
+    .run(projectId, login, ts);
+}
